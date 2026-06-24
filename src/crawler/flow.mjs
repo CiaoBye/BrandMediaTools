@@ -2,14 +2,25 @@ import { envWithSettings } from "../settings.mjs";
 import { isAccountUrl, openXhsContext, attachResponseCollector, sleep } from "../xhsSdk.mjs";
 import { fetchNoteViaHttp, extractNote, hasUsableAssets } from "./extract.mjs";
 import { extractAccountNotes } from "./account.mjs";
+import { crawlNoteViaApi, fetchUserNotesViaApi, readApiCookie } from "../xhsApiClient.mjs";
 
 async function crawlWithFallback(input, options = {}) {
+  const rootDir = options.rootDir || process.cwd();
   if (!isAccountUrl(input.url)) {
+    // 1. API 优先（需 Cookie）
+    if (readApiCookie(rootDir)) {
+      const noteId = input.url.match(/\/explore\/([a-zA-Z0-9]+)/)?.[1];
+      if (noteId) {
+        const apiResult = await crawlNoteViaApi(noteId, input.url, rootDir);
+        if (apiResult && apiResult.length > 0 && hasUsableAssets(apiResult[0])) return apiResult;
+      }
+    }
+    // 2. HTTP SSR 路径（免登录）
     const httpResult = await fetchNoteViaHttp(input, options);
     if (httpResult && httpResult.length > 0 && hasUsableAssets(httpResult[0])) return httpResult;
   }
 
-  const rootDir = options.rootDir || process.cwd();
+
   const settings = envWithSettings(rootDir);
   const headless = options.headless ?? settings.xhs.headless;
   let context = null;

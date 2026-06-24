@@ -6,6 +6,7 @@ import {
   sleep, randomDelay, parseInitState
 } from "../xhsSdk.mjs";
 import { fetchNoteViaHttp, extractNote } from "./extract.mjs";
+import { fetchUserNotesViaApi, readApiCookie } from "../xhsApiClient.mjs";
 
 async function fetchAccountNotesViaHttp(userId, options = {}) {
   const rootDir = options.rootDir || process.cwd();
@@ -147,6 +148,28 @@ export async function followAccount(input, options = {}) {
   const seenNoteIds = new Set();
   let authorName = input.authorName || "";
   let avatarUrl = "";
+
+  // API 优先：使用 xhshow 签名获取用户笔记列表
+  if (readApiCookie(rootDir)) {
+    try {
+      let cursor = "";
+      let apiResult;
+      do {
+        apiResult = await fetchUserNotesViaApi(userId, cursor, rootDir);
+        if (!apiResult || !apiResult.notes || !apiResult.notes.length) break;
+        for (const note of apiResult.notes) {
+          const nid = note.noteId || "";
+          if (!nid || seenNoteIds.has(nid)) continue;
+          if (!isFirstFollow && knownNoteIdSet.has(nid)) { seenNoteIds.add(nid); continue; }
+          seenNoteIds.add(nid);
+          allNotes.push({ ...note, accountId: input.accountId || null, brand: input.brand || "" });
+        }
+        cursor = apiResult.cursor || "";
+      } while (cursor && allNotes.length < 50);
+      console.log(`[followAccount] API 获取到 ${allNotes.length} 条笔记`);
+      return { notes: allNotes, cursor: JSON.stringify(Array.from(knownNoteIdSet)), authorName, avatarUrl, totalFound: allNotes.length };
+    } catch (e) { console.warn("[followAccount] API 路径失败，降级:", e.message); }
+  }
 
   let noteUrls = [];
   let httpRiskError = null;
