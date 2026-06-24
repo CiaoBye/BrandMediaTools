@@ -1,0 +1,425 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>品牌内容情报工具</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/vendor/chart.umd.js"></script>
+  </head>
+  <body>
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <h1>品牌情报</h1>
+        <p>小红书内容采集 · AI 拆解 · 素材归档</p>
+      </div>
+      <nav class="sidebar-nav" id="sidebarNav">
+        <a class="active" data-page="page-crawl"><span class="icon">📥</span> 采集</a>
+        <a data-page="page-accounts"><span class="icon">👥</span> 账号库</a>
+        <a data-page="page-library"><span class="icon">📚</span> 案例库</a>
+        <a data-page="page-dashboard"><span class="icon">📊</span> 仪表盘</a>
+        <a data-page="page-content-analysis"><span class="icon">🔍</span> 内容分析</a>
+        <a data-page="page-reports"><span class="icon">📋</span> 报告</a>
+        <a data-page="page-xhs-accounts"><span class="icon">🔑</span> 账号</a>
+        <a data-page="page-logs"><span class="icon">📋</span> 日志</a>
+      </nav>
+      <div class="sidebar-footer" style="display:flex;gap:0">
+        <a id="sidebarNotifications" class="sidebar-footer-link"><span class="icon">🔔</span> 通知<span id="notifBadge" class="notif-badge" style="display:none">0</span></a>
+        <a id="sidebarSettings" class="sidebar-footer-link"><span class="icon">⚙️</span> 设置</a>
+      </div>
+    </aside>
+
+    <div class="main">
+      <!-- ===== 采集 ===== -->
+      <div id="page-crawl" class="page active">
+        <div class="page-header">
+          <h2>内容采集</h2>
+          <p>粘贴小红书链接或分享文本，自动提取并保存素材</p>
+        </div>
+        <div class="crawl-panel">
+          <div class="crawl-input-row">
+            <textarea id="crawlUrl" placeholder="粘贴小红书笔记/账号链接，或整段分享文本（支持多条）" rows="2"></textarea>
+            <button id="startCrawlBtn" class="primary crawl-start-btn">开始采集</button>
+          </div>
+          <div class="crawl-params">
+            <div class="brand-wrapper">
+              <input id="crawlBrand" placeholder="归属品牌" autocomplete="off" />
+              <div id="brandSuggestions" class="brand-suggestions"></div>
+            </div>
+            <input id="crawlTags" placeholder="标签，逗号分隔" />
+            <input id="crawlMaxNotes" type="number" value="12" min="1" max="50" />
+          </div>
+          <div id="crawlStatus" class="crawl-status-idle">等待采集任务</div>
+          <div id="crawlResult" class="crawl-result"></div>
+        </div>
+        <div class="card" style="margin-top:var(--sp-4)">
+          <div class="card-header"><h3>发现</h3></div>
+          <div class="crawl-search-row">
+            <input id="searchKeyword" placeholder="搜索关键词（如\"护发素 2025\"）" />
+            <button id="searchBtn" class="ghost">搜索</button>
+          </div>
+          <div id="searchResults" class="search-results empty-state" style="min-height:40px;margin-top:8px">
+            <p class="muted">输入关键词搜索小红书公开内容</p>
+          </div>
+        </div>
+        <div class="card" style="margin-top:var(--sp-4)">
+          <div class="card-header"><h3>最近记录</h3></div>
+          <div id="crawlJobs" class="job-list empty-state" style="min-height:60px">
+            <p>暂无采集记录</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 账号库 + 跟随 ===== -->
+      <div id="page-accounts" class="page">
+        <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <h2>账号追踪</h2>
+            <p>竞品账号管理、长期内容跟踪与趋势分析</p>
+          </div>
+          <button id="addAccountBtn" class="primary sm" style="width:auto;padding:0 16px">＋ 添加账号</button>
+        </div>
+        <div id="newAccountForm" style="display:none" class="card">
+          <div class="card-header"><h3>添加账号</h3></div>
+          <div class="form-row">
+            <input id="accBrand" placeholder="品牌名称" />
+            <input id="accName" placeholder="账号名称" />
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+            <input id="accUrl" placeholder="小红书账号主页链接" style="flex:1" />
+            <button id="detectNameBtn" class="ghost sm" style="white-space:nowrap">自动识别</button>
+          </div>
+          <div class="form-row three">
+            <input id="accTone" placeholder="调性，如高端、疗愈" />
+            <input id="accIndustry" placeholder="行业/品类" />
+            <select id="accPriority">
+              <option value="高">高优先级</option>
+              <option value="中" selected>中优先级</option>
+              <option value="低">低优先级</option>
+            </select>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:8px">
+            <button id="saveAccountBtn" class="ghost sm">保存</button>
+            <button id="cancelAccountBtn" class="ghost sm" style="color:var(--red)">取消</button>
+          </div>
+        </div>
+        <div id="accountsList" class="account-list empty-state">
+          <div class="icon">👥</div>
+          <p>还没有竞品账号</p>
+        </div>
+      </div>
+
+      <!-- ===== 案例库 ===== -->
+      <div id="page-library" class="page">
+        <div class="lib-profile">
+          <div class="lib-avatar"><span class="lib-avatar-letter">📚</span></div>
+          <div class="lib-info">
+            <h2 class="lib-name">内容案例库</h2>
+            <p class="lib-desc">品牌内容素材与 AI 拆解归档</p>
+            <div class="lib-stats">
+              <span><strong id="libStatNotes">0</strong> 笔记</span>
+              <span><strong id="libStatBrands">0</strong> 品牌</span>
+              <span><strong id="libStatAssets">0</strong> 素材</span>
+            </div>
+          </div>
+        </div>
+        <div class="lib-tabs">
+          <button class="lib-tab active" data-lib-tab="">全部内容</button>
+          <button class="lib-tab" data-lib-tab="选题库">选题库</button>
+          <button class="lib-tab" data-lib-tab="脚本模板库">脚本模板</button>
+          <button class="lib-tab" data-lib-tab="视觉参考库">视觉参考</button>
+          <button class="lib-tab" data-lib-tab="营销话术库">营销话术</button>
+        </div>
+        <div class="lib-toolbar">
+          <div class="lib-search">
+            <input class="lib-search-input" id="searchInput" placeholder="搜索标题、品牌、作者、标签…" />
+          </div>
+          <div class="lib-toolbar-right">
+            <button id="selectModeBtn" class="ghost sm" style="padding:0 10px;font-size:12px">☐ 选择</button>
+            <select id="brandFilter"><option value="">全部品牌</option></select>
+            <select id="contentTypeFilter"><option value="">全部类型</option></select>
+            <select id="viewModeSelect">
+              <option value="card">卡片视图</option>
+              <option value="table">表格视图</option>
+            </select>
+          </div>
+        </div>
+        <div id="batchBar" class="batch-bar" style="display:none">
+          <label class="batch-select-all">
+            <input type="checkbox" id="selectAllCheckbox" />
+            <span id="selectAllLabel">全选</span>
+          </label>
+          <span class="batch-count" id="batchCount">已选 0 条</span>
+          <button class="ghost sm" id="batchTagBtn">批量标签</button>
+          <button class="ghost sm" id="batchBrandBtn">移动品牌</button>
+          <button class="ghost sm" id="batchLibraryBtn">分类</button>
+          <button class="ghost sm" id="batchExportBtn">导出选中</button>
+          <button class="ghost sm" style="color:var(--red)" id="batchDeleteBtn">批量删除</button>
+          <button class="ghost sm" id="batchClearBtn">取消选择</button>
+        </div>
+        <div id="notesContainer">
+          <div id="notesList" class="lib-grid empty-state">
+            <div class="icon">📚</div>
+            <p>案例库暂无内容，先去采集吧</p>
+          </div>
+          <div id="notesTable" class="note-table-wrap" style="display:none">
+            <table class="note-table">
+              <thead>
+                <tr>
+                  <th style="width:36px"><input type="checkbox" id="selectAllTableCheckbox" /></th>
+                  <th>品牌</th>
+                  <th>类型</th>
+                  <th>内容分类</th>
+                  <th>采集时间</th>
+                  <th>AI 拆解</th>
+                  <th style="width:80px">操作</th>
+                </tr>
+              </thead>
+              <tbody id="tableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 仪表盘 ===== -->
+      <div id="page-dashboard" class="page">
+        <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <h2>数据仪表盘</h2>
+            <p>采集趋势、内容分布与品牌概览</p>
+          </div>
+          <div class="time-range-group">
+            <select id="dashboardRange" class="time-range-select">
+              <option value="">全部</option>
+              <option value="7" selected>近 7 天</option>
+              <option value="30">近 30 天</option>
+              <option value="90">近 90 天</option>
+            </select>
+          </div>
+        </div>
+        <div class="stats-grid" id="statsGrid">
+          <div class="stat-card"><div class="stat-value" id="statNotes">0</div><div class="stat-label">笔记数</div></div>
+          <div class="stat-card"><div class="stat-value" id="statAssets">0</div><div class="stat-label">素材数</div></div>
+          <div class="stat-card"><div class="stat-value" id="statAccounts">0</div><div class="stat-label">竞品账号</div></div>
+          <div class="stat-card"><div class="stat-value" id="statXhsAccounts">0</div><div class="stat-label">登录账号</div></div>
+          <div class="stat-card"><div class="stat-value" id="statJobs">0</div><div class="stat-label">采集任务</div></div>
+          <div class="stat-card"><div class="stat-value" id="statAnalysis">0</div><div class="stat-label">AI 分析</div></div>
+        </div>
+        <div class="charts-grid">
+          <div class="card"><div class="card-header"><h3>采集趋势</h3></div><canvas id="chartTrend" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>内容类型</h3></div><canvas id="chartType" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>品牌分布</h3></div><canvas id="chartBrand" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>素材类型</h3></div><canvas id="chartAssetKind" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>状态分布</h3></div><canvas id="chartStatus" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>互动趋势</h3></div><canvas id="chartInteraction" height="200"></canvas></div>
+          <div class="card" style="grid-column:1/2"><div class="card-header"><h3>热门标签</h3></div><div id="tagCloud" class="tag-cloud" style="min-height:160px"></div></div>
+          <div class="card" style="grid-column:2/3"><div class="card-header"><h3>Top 20 笔记</h3></div><div id="topNotesList" class="top-notes-list" style="min-height:160px;max-height:320px;overflow-y:auto"></div></div>
+        </div>
+        <div class="card" style="margin-top:var(--sp-4)" id="brandCompareCard">
+          <div class="card-header"><h3>品牌对比</h3></div>
+          <div id="brandCompareBody"><p class="muted" style="text-align:center;padding:20px">加载中...</p></div>
+        </div>
+      </div>
+
+      <!-- ===== 内容分析 ===== -->
+      <div id="page-content-analysis" class="page">
+        <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
+          <div>
+            <h2>内容分析</h2>
+            <p>高频主题、标题句式、开头钩子统计</p>
+          </div>
+          <div class="time-range-group">
+            <select id="caRange" class="time-range-select">
+              <option value="">全部</option>
+              <option value="7">近 7 天</option>
+              <option value="30" selected>近 30 天</option>
+              <option value="90">近 90 天</option>
+            </select>
+          </div>
+        </div>
+        <div class="stats-grid" id="caStatsGrid">
+          <div class="stat-card"><div class="stat-value" id="caTotalNotes">0</div><div class="stat-label">筛选笔记</div></div>
+          <div class="stat-card"><div class="stat-value" id="caHookRate">0%</div><div class="stat-label">标题钩子率</div></div>
+          <div class="stat-card"><div class="stat-value" id="caAvgTitle">0</div><div class="stat-label">平均标题字数</div></div>
+          <div class="stat-card"><div class="stat-value" id="caAvgBody">0</div><div class="stat-label">平均正文字数</div></div>
+          <div class="stat-card"><div class="stat-value" id="caAvgLikes">0</div><div class="stat-label">平均点赞</div></div>
+          <div class="stat-card"><div class="stat-value" id="caMaxTotal">0</div><div class="stat-label">最高互动</div></div>
+        </div>
+        <div class="charts-grid">
+          <div class="card"><div class="card-header"><h3>标题钩子分布</h3></div><canvas id="caHookChart" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>标题句式分布</h3></div><canvas id="caPatternChart" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>内容类型分布</h3></div><canvas id="caTypeChart" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>营销目的分布</h3></div><canvas id="caGoalChart" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>视觉风格分布</h3></div><canvas id="caVisualChart" height="200"></canvas></div>
+          <div class="card"><div class="card-header"><h3>内容分类统计</h3></div><canvas id="caLibChart" height="200"></canvas></div>
+          <div class="card" style="grid-column:1/3"><div class="card-header"><h3>高频主题词</h3></div><div id="caTopicCloud" class="tag-cloud" style="min-height:160px"></div></div>
+        </div>
+      </div>
+
+      <!-- ===== 报告 ===== -->
+      <div id="page-reports" class="page">
+        <div class="page-header">
+          <h2>内容报告</h2>
+          <p>竞品简报与内容复盘</p>
+        </div>
+        <div class="card">
+          <div class="filter-bar">
+            <select id="reportTypeSelect">
+              <option value="weekly">本周简报</option>
+              <option value="monthly">本月复盘</option>
+            </select>
+            <button id="generateReportBtn" class="primary">生成报告</button>
+            <button id="exportReportJsonBtn" class="ghost sm" style="display:none">导出 JSON</button>
+            <button id="exportReportMdBtn" class="ghost sm" style="display:none">导出 Markdown</button>
+          </div>
+          <div id="reportContent" class="empty-state">
+            <div class="icon">📋</div>
+            <p>点击"生成报告"查看分析结果</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 账号管理 ===== -->
+      <div id="page-xhs-accounts" class="page">
+        <div class="page-header">
+          <h2>小红书账号管理</h2>
+          <p>管理登录 Cookie、扫码绑定、定时采集任务</p>
+        </div>
+        <div class="card-grid two-col">
+          <div class="card">
+            <div class="card-header"><h3>绑定账号</h3></div>
+            <div class="form-group">
+              <input id="xhsAccountName" placeholder="账号名称（如：主号、运营号）" />
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button id="addAccountQrBtn" class="primary sm" style="width:auto;padding:0 16px">扫码登录</button>
+              <button id="addAccountPasteBtn" class="ghost sm" style="width:auto;padding:0 16px">粘贴 Cookie</button>
+            </div>
+            <div id="pasteCookieArea" style="display:none;margin-top:8px">
+              <textarea id="pasteCookieInput" placeholder="粘贴完整的 Cookie 字符串" rows="2" style="width:100%;font-size:12px"></textarea>
+              <button id="savePastedCookie" class="ghost sm" style="margin-top:4px;width:auto">保存</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h3>已绑账号</h3></div>
+            <div id="xhsAccountsList" class="empty-state" style="min-height:60px">
+              <p>暂无已绑定账号</p>
+            </div>
+          </div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-header">
+            <h3>🔍 全通道诊断</h3>
+            <button id="diagnoseBtn" class="ghost sm">运行诊断</button>
+          </div>
+          <div id="diagnoseResult" class="empty-state" style="min-height:40px">
+            <p>点击"运行诊断"检测各采集通道的可用状态</p>
+          </div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-header">
+            <h3>定时采集任务</h3>
+            <button id="addScheduleBtn" class="ghost sm">＋ 新建任务</button>
+          </div>
+          <div id="scheduleForm" style="display:none;margin-bottom:12px;padding:12px;border:1px solid var(--line);border-radius:var(--radius)">
+            <div class="form-row three" style="grid-template-columns:1fr 1fr 80px">
+              <input id="scheduleName" placeholder="任务名称" />
+              <input id="scheduleUrl" placeholder="采集链接或搜索关键词" />
+              <select id="scheduleType">
+                <option value="crawl">采集</option>
+                <option value="search">搜索</option>
+                <option value="follow">跟随账号</option>
+              </select>
+            </div>
+            <div class="form-row three" style="margin-top:6px;grid-template-columns:1fr 1fr 80px">
+              <select id="scheduleAccount"><option value="">所有账号</option></select>
+              <input id="scheduleInterval" type="number" value="60" min="10" placeholder="间隔(分钟)" />
+              <button id="saveScheduleBtn" class="ghost sm">保存</button>
+            </div>
+          </div>
+          <div id="scheduledTasksList" class="empty-state" style="min-height:40px">
+            <p>暂无定时任务</p>
+          </div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-header"><h3>任务日志</h3></div>
+          <div id="taskLogsList" class="empty-state" style="min-height:40px">
+            <p>暂无日志</p>
+          </div>
+        </div>
+        <div class="card" style="margin-top:12px">
+          <div class="card-header">
+            <h3>笔记健康检测</h3>
+            <button id="healthCheckBtn" class="ghost sm">检测限流状态</button>
+          </div>
+          <div id="healthResult" class="empty-state" style="min-height:40px">
+            <p>点击"检测限流状态"分析已发布笔记的分发健康度</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== 日志 ===== -->
+      <div id="page-logs" class="page">
+        <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start">
+          <div><h2>运行日志</h2><p>软件操作记录，便于排查分析</p></div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input id="logSearch" placeholder="搜索日志..." style="width:200px;font-size:13px;padding:6px 10px" />
+            <button id="logRefreshBtn" class="ghost sm" style="padding:0 12px">刷新</button>
+            <button id="logClearBtn" class="ghost sm" style="padding:0 12px">清空</button>
+          </div>
+        </div>
+        <div class="card">
+          <div id="logList" class="log-list">
+            <div class="empty-state"><div class="icon">📋</div><p>暂无日志</p></div>
+          </div>
+          <div id="logLoading" style="display:none;text-align:center;padding:24px;color:var(--text-muted)">加载中...</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== QR Login Modal ===== -->
+    <div id="qrOverlay" class="overlay" style="display:none">
+      <div class="overlay-panel" style="max-width:400px;text-align:center">
+        <div class="overlay-head">
+          <h2>扫码登录小红书</h2>
+          <button id="closeQrBtn" class="btn-icon">✕</button>
+        </div>
+        <div id="qrCodeContainer" style="margin:16px 0;min-height:240px;display:flex;align-items:center;justify-content:center">
+          <p class="muted">正在加载二维码…</p>
+        </div>
+        <p id="qrStatus" style="font-size:13px;color:var(--text-muted)">请使用小红书 App 扫码</p>
+        <div style="display:flex;gap:8px;justify-content:center">
+          <button id="cancelQrBtn" class="ghost">取消</button>
+          </div>
+      </div>
+      </div>
+
+    <!-- ===== Notification Panel ===== -->
+    <div id="notifPanel" class="notif-panel" style="display:none">
+      <div class="notif-panel-header">
+        <strong>通知</strong>
+        <div style="display:flex;gap:4px">
+          <button id="notifMarkAllRead" class="ghost sm" style="height:28px;font-size:11px">全部已读</button>
+          <button id="notifClose" class="btn-icon" style="font-size:14px">✕</button>
+        </div>
+      </div>
+      <div id="notifList" class="notif-list">
+        <p class="muted" style="text-align:center;padding:20px">暂无通知</p>
+      </div>
+    </div>
+
+    <!-- ===== Settings Overlay ===== -->
+    <div id="settingsOverlay" class="overlay" style="display:none">
+      <div class="overlay-panel">
+        <div class="overlay-head">
+          <h2>设置</h2>
+          <button id="closeSettingsBtn" class="btn-icon">✕</button>
+        </div>
+        <form id="settingsForm" class="settings-form"></form>
+      </div>
+    </div>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

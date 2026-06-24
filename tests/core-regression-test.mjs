@@ -1,0 +1,132 @@
+import assert from "node:assert/strict";
+import http from "node:http";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { persistNoteAssets } from "../src/downloader.mjs";
+import { generateReport } from "../src/reportGenerator.mjs";
+import { getEngagementStats } from "../src/contentAnalysis.mjs";
+import { analyzeTitle } from "../src/xhsViralAnalysis.mjs";
+import { decryptCookie, encryptCookie } from "../src/xhsAuth.mjs";
+import { fetchNoteViaHttp } from "../src/crawler/extract.mjs";
+import { fmtDate, fmtDateTime } from "../src/time.mjs";
+import { Storage } from "../src/storage.mjs";
+
+const rootDir = mkdtempSync(path.join(os.tmpdir(), "xhs-core-regression-"));
+const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000000020001e221bc330000000049454e44ae426082", "hex");
+
+const server = http.createServer((req, res) => {
+  if (req.url === "/asset.png") {
+    res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length });
+    res.end(png);
+    return;
+  }
+  if (req.url === "/live") {
+    const state = {
+      note: {
+        noteDetailMap: {
+          n1: {
+            note: {
+              noteId: "1234567890abcdef",
+              title: "Live 图回归测试",
+              desc: "测试",
+              type: "normal",
+              time: Date.now(),
+              user: { nickname: "测试作者", userId: "u1" },
+              interactInfo: { likedCount: 10, commentCount: 2 },
+              imageList: [{
+                width: 720,
+                height: 960,
+                urlDefault: `http://127.0.0.1:${server.address().port}/asset.png`,
+                livePhoto: true,
+                stream: { h264: [{ masterUrl: `http://127.0.0.1:${server.address().port}/live.mp4` }] }
+              }]
+            }
+          }
+        }
+      }
+    };
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`<script>window.__INITIAL_STATE__=${JSON.stringify(state)}</script>`);
+    return;
+  }
+  res.writeHead(404);
+  res.end();
+});
+
+await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+const port = server.address().port;
+
+try {
+  const saved = await persistNoteAssets(rootDir, {
+    id: "note-1",
+    noteId: "note-1",
+    sourceUrl: `http://127.0.0.1:${port}/live`,
+    brand: "回归测试",
+    authorName: "测试作者",
+    title: "HTTP 下载测试",
+    contentType: "图文笔记",
+    collectedAt: new Date().toISOString(),
+    assets: [{ kind: "image", sourceUrl: `http://127.0.0.1:${port}/asset.png` }]
+  });
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].status, "已保存");
+  assert.ok(saved[0].localPath);
+  assert.ok(readFileSync(path.join(rootDir, saved[0].localPath)).length > 0);
+
+  const report = generateReport([{
+    id: "n1",
+    title: "为什么这条内容有效？",
+    brand: "测试品牌",
+    authorName: "测试作者",
+    collectedAt: new Date().toISOString(),
+    contentType: "图文笔记",
+    assets: [{}],
+    metrics: { likedCount: 100, commentCount: 20, collectedCount: 30, shareCount: 5 }
+  }], "weekly", analyzeTitle);
+  assert.equal(report.summary.totalNotes, 1);
+  assert.equal(report.topNotes[0].totalInteractions, 155);
+
+  const engagement = getEngagementStats([{ metrics: { likedCount: 100, commentCount: 20 } }], (m) => {
+    const likes = Number(m.likedCount || 0);
+    const comments = Number(m.commentCount || 0);
+    return { likes, comments, collects: 0, shares: 0, total: likes + comments };
+  });
+  assert.equal(engagement.avgLikes, 100);
+  assert.equal(engagement.maxTotal, 120);
+
+  const encrypted = encryptCookie("a1=test; web_session=session-value", rootDir);
+  assert.equal(decryptCookie(encrypted, rootDir), "a1=test; web_session=session-value");
+  assert.equal(decryptCookie("00:11:22", rootDir), "");
+
+  const liveNotes = await fetchNoteViaHttp({ url: `http://127.0.0.1:${port}/live` }, { rootDir });
+  assert.equal(liveNotes[0].contentType, "Live图文");
+  assert.ok(liveNotes[0].assets.every((asset) => asset.sourceUrl));
+
+  assert.equal(fmtDate("2026-06-23T16:00:00.000Z"), "2026-06-24");
+  assert.match(fmtDateTime("2026-06-23T16:00:00.000Z"), /^2026-06-24 24:00$|^2026-06-24 00:00$/);
+
+  const storage = new Storage(rootDir);
+  const libraryFile = path.join(rootDir, "data", "library", "安全测试", "同目录", "owned.jpg");
+  const siblingFile = path.join(rootDir, "data", "library", "安全测试", "同目录", "other.jpg");
+  const outsideFile = path.join(rootDir, "outside.jpg");
+  mkdirSync(path.dirname(libraryFile), { recursive: true });
+  writeFileSync(libraryFile, png);
+  writeFileSync(siblingFile, png);
+  writeFileSync(outsideFile, png);
+  const storedNote = storage.upsertNote({ sourceUrl: "https://example.test/safe-delete", noteId: "safe-delete", brand: "安全测试", title: "删除边界", assets: [] });
+  storage.addAssets(storedNote.id, [
+    { kind: "image", localPath: path.relative(rootDir, libraryFile), status: "已保存" },
+    { kind: "image", localPath: outsideFile, status: "已保存" }
+  ]);
+  assert.equal(storage.deleteNote(storedNote.id), true);
+  assert.equal(existsSync(libraryFile), false, "应删除归属于笔记的素材");
+  assert.equal(existsSync(siblingFile), true, "不得递归删除同目录其他素材");
+  assert.equal(existsSync(outsideFile), true, "不得删除素材库根目录之外的文件");
+  storage.db.close();
+
+  console.log("core-regression-test passed");
+} finally {
+  await new Promise((resolve) => server.close(resolve));
+  rmSync(rootDir, { recursive: true, force: true });
+}

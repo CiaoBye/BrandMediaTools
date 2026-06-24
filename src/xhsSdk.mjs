@@ -1,0 +1,465 @@
+import path from "node:path";
+import { createRequire } from "node:module";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { cookieStringToPlaywrightCookies, readXhsCookie } from "./xhsAuth.mjs";
+import { envWithSettings } from "./settings.mjs";
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export function normalizeUrl(value) {
+  if (!value || typeof value !== "string") return "";
+  return value
+    .replaceAll("\\u002F", "/")
+    .replaceAll("\\/", "/")
+    .replaceAll("&amp;", "&")
+    .trim();
+}
+
+export function extractXhsUrl(input) {
+  return extractXhsUrls(input)[0] || "";
+}
+
+export function extractXhsUrls(input) {
+  const text = normalizeUrl(input);
+  const matches = Array.from(text.matchAll(/https?:\/\/(?:(?:www\.)?xiaohongshu\.com|xhslink\.com)\/[^\s，,。]+/gi));
+  const urls = [];
+  const seen = new Set();
+  for (const match of matches) {
+    let value = match[0];
+    try {
+      value = new URL(value).toString();
+    } catch {}
+    if (!seen.has(value)) {
+      seen.add(value);
+      urls.push(value);
+    }
+  }
+  return urls;
+}
+
+export function extractXhsId(inputUrl) {
+  const url = extractXhsUrl(inputUrl) || inputUrl;
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const itemIndex = parts.findIndex((part) => part === "item");
+    if (itemIndex >= 0 && parts[itemIndex + 1]) return parts[itemIndex + 1];
+    const exploreIndex = parts.findIndex((part) => part === "explore");
+    if (exploreIndex >= 0 && parts[exploreIndex + 1]) return parts[exploreIndex + 1];
+    if (parts[0] === "user" && parts[1] === "profile") {
+      return parts[3] || parts[2] || "";
+    }
+  } catch {}
+  return "";
+}
+
+function decodeLoose(value) {
+  let text = normalizeUrl(value);
+  text = text
+    .replaceAll("\\u0026", "&")
+    .replaceAll("\\u003D", "=")
+    .replaceAll("\\u003d", "=");
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
+
+export function cleanAssetUrl(url) {
+  let value = decodeLoose(url)
+    .replaceAll("&quot;", "")
+    .replaceAll("&quot", "")
+    .replaceAll("&#34;", "")
+    .replaceAll("\\", "")
+    .replace(/[)\]}；;，,。]+$/g, "");
+  value = value.split(";background")[0];
+  value = value.split(");background")[0];
+  value = value.split("%3Bbackground")[0];
+  value = value.replace(/[?&]x-oss-process=image\/[^&]*/gi, "").replace(/[?&]imageView2[^&]*/gi, "");
+  value = value.replace(/([?&])&+/g, "$1").replace(/[?&]$/, "");
+  return value;
+}
+
+export function watermarkStatus(url) {
+  const lower = url.toLowerCase();
+  if (lower.includes("watermark") || lower.includes("wm_") || lower.includes("/wm/") || lower.includes("water_mask") || lower.includes("wm=")) return "疑似带水印";
+  if (lower.includes("sns-webpic") || lower.includes("xhscdn") || lower.includes("sns-img") || lower.includes("ci.xiaohongshu.com")) return "原始候选";
+  return "未知";
+}
+
+export function classifyUrl(url) {
+  const lower = url.toLowerCase();
+  if (lower.includes("livephoto") || lower.includes("live_photo") || lower.includes("/live/")) return "livePhoto";
+  if (/\.(mp4|mov|m4v)(\?|$)/.test(lower) || lower.includes(".m3u8") || lower.includes("sns-video") || lower.includes("/video/")) return "video";
+  if (/\.(jpg|jpeg|png|webp|avif|heic)(\?|$)/.test(lower) || lower.includes("image") || lower.includes("sns-img") || lower.includes("sns-webpic")) return "image";
+  return "unknown";
+}
+
+export function isAccountUrl(url) {
+  return /xiaohongshu\.com\/user\/profile\//.test(url);
+}
+
+export function isXhsNoteUrl(url) {
+  return Boolean(normalizeXhsNoteUrl(url));
+}
+
+export function normalizeXhsNoteUrl(url) {
+  const cleaned = normalizeUrl(url);
+  try {
+    const parsed = new URL(cleaned, "https://www.xiaohongshu.com");
+    if (!/xiaohongshu\.com$/i.test(parsed.hostname)) return "";
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    let noteId = "";
+    if (parts[0] === "explore" && parts[1]) noteId = parts[1];
+    if (parts[0] === "discovery" && parts[1] === "item" && parts[2]) noteId = parts[2];
+    if (parts[0] === "user" && parts[1] === "profile" && parts[3]) noteId = parts[3];
+    if (!noteId || noteId.length < 12) return "";
+    const output = new URL(`https://www.xiaohongshu.com/explore/${noteId}`);
+    for (const key of ["xsec_token", "xsec_source", "source", "xhsshare"]) {
+      const value = parsed.searchParams.get(key);
+      if (value) output.searchParams.set(key, value);
+    }
+    return output.toString();
+  } catch {
+    return "";
+  }
+}
+
+export function scoreXhsNoteUrl(url) {
+  let score = 0;
+  if (url.includes("xsec_token=")) score += 100;
+  if (url.includes("xsec_source=")) score += 10;
+  if (url.includes("source=")) score += 2;
+  if (url.startsWith("https://")) score += 1;
+  return score;
+}
+
+export function mergeXhsLinks(inputUrls = [], extractedLinks = []) {
+  const byNoteId = new Map();
+  const looseLinks = [];
+  for (const url of [...inputUrls.filter((item) => isXhsNoteUrl(item)), ...extractedLinks]) {
+    const noteId = extractXhsId(url);
+    if (!noteId) {
+      if (!looseLinks.includes(url)) looseLinks.push(url);
+      continue;
+    }
+    const existing = byNoteId.get(noteId);
+    if (!existing || scoreXhsNoteUrl(url) > scoreXhsNoteUrl(existing)) {
+      byNoteId.set(noteId, url);
+    }
+  }
+  return [...byNoteId.values(), ...looseLinks];
+}
+
+export function scoreVideo(asset, preference = "resolution") {
+  const url = asset.url.toLowerCase();
+  const protocol = url.startsWith("https://") ? 1000 : 0;
+  const primaryHost = url.includes("sns-video") ? 500 : 0;
+  const wmPenalty = url.includes("watermark") || url.includes("wm_") || url.includes("/wm/") ? -100000 : 0;
+  if (preference === "bitrate") {
+    const bitrate = asset.bitrate || Number(url.match(/bitrate[=_/](\d+)/i)?.[1] || 0);
+    return bitrate + protocol + primaryHost + wmPenalty;
+  }
+  if (preference === "size") {
+    const fileSize = asset.fileSize || 0;
+    return (fileSize > 0 ? -fileSize : 0) + protocol + wmPenalty;
+  }
+  const area = (asset.width || 0) * (asset.height || 0);
+  const quality = /1080|1920|2160|4k|uhd/.test(url) ? 10000000 : 0;
+  const bitrate = Math.min(asset.bitrate || 0, 9999);
+  return area + quality + bitrate + protocol + primaryHost + wmPenalty;
+}
+
+function videoIdentity(url) {
+  try {
+    const parsed = new URL(cleanAssetUrl(url));
+    const pathParts = parsed.pathname.split("/").filter(Boolean);
+    const lastPart = pathParts.at(-1) || parsed.pathname;
+    const fileId = lastPart.replace(/\.(mp4|mov|m4v)$/i, "");
+    const ids = [
+      parsed.searchParams.get("filename"),
+      parsed.searchParams.get("sign"),
+      fileId
+    ].filter(Boolean);
+    return ids.join("|").replace(/^http:\/\//, "https://");
+  } catch {
+    return cleanAssetUrl(url).replace(/^http:\/\//, "https://").split("?")[0];
+  }
+}
+
+export function dedupeVideos(videos, preference = "resolution") {
+  const byId = new Map();
+  for (const video of videos) {
+    const id = videoIdentity(video.url);
+    const existing = byId.get(id);
+    if (!existing || scoreVideo(video, preference) > scoreVideo(existing, preference)) {
+      byId.set(id, video);
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) => scoreVideo(b, preference) - scoreVideo(a, preference));
+}
+
+export function bestImageUrl(image) {
+  if (!image || typeof image !== "object") return "";
+  const candidates = [];
+  if (image.urlDefault) candidates.push({ url: image.urlDefault, w: image.width || 0, h: image.height || 0 });
+  if (image.urlPre) candidates.push({ url: image.urlPre, w: image.width || 0, h: image.height || 0 });
+  if (image.url_pre) candidates.push({ url: image.url_pre, w: image.width || 0, h: image.height || 0 });
+  if (image.url) candidates.push({ url: image.url, w: image.width || 0, h: image.height || 0 });
+  const infoList = Array.isArray(image.infoList) ? image.infoList : Array.isArray(image.info_list) ? image.info_list : [];
+  for (const item of infoList) {
+    if (item?.url) candidates.push({ url: item.url, w: item.width || 0, h: item.height || 0 });
+  }
+  if (!candidates.length) return "";
+  candidates.sort((a, b) => {
+    const areaA = a.w * a.h;
+    const areaB = b.w * b.h;
+    if (areaA !== areaB) return areaB - areaA;
+    const wmA = watermarkStatus(a.url) === "原始候选" ? 1 : 0;
+    const wmB = watermarkStatus(b.url) === "原始候选" ? 1 : 0;
+    return wmB - wmA;
+  });
+  return candidates[0].url;
+}
+
+export function bestStreamUrl(stream) {
+  if (!stream || typeof stream !== "object") return "";
+  const codecOrder = ["h264", "h265", "h266", "av1"];
+  for (const codec of codecOrder) {
+    const variants = Array.isArray(stream[codec]) ? stream[codec] : [];
+    for (const variant of variants) {
+      if (variant?.masterUrl) return variant.masterUrl;
+      if (Array.isArray(variant?.backupUrls) && variant.backupUrls[0]) return variant.backupUrls[0];
+    }
+  }
+  return "";
+}
+
+export function normalizeStructuredAssets(noteData) {
+  const assets = [];
+  const imageList = Array.isArray(noteData?.imageList) ? noteData.imageList : [];
+  for (let index = 0; index < imageList.length; index += 1) {
+    const image = imageList[index];
+    const imageUrl = cleanAssetUrl(bestImageUrl(image));
+    const base = {
+      width: image.width || null,
+      height: image.height || null,
+      imageIndex: index + 1,
+      livePhoto: Boolean(image.livePhoto),
+      fileId: image.fileId || "",
+      traceId: image.traceId || ""
+    };
+    if (imageUrl) {
+      assets.push({ ...base, kind: "image", url: imageUrl, source: "initial-state:imageList" });
+    }
+    if (image.livePhoto) {
+      const streamUrl = cleanAssetUrl(bestStreamUrl(image.stream));
+      if (streamUrl) {
+        assets.push({ ...base, kind: "livePhoto", url: streamUrl, source: "initial-state:imageList.stream", pairedImageIndex: index + 1 });
+      }
+    }
+  }
+  return assets;
+}
+
+export function isLoginPage(extracted) {
+  const text = `${extracted.title || ""}\n${extracted.bodyText || ""}`;
+  return /手机号登录|验证码登录|登录小红书|其他登录方式|请输入手机号/.test(text);
+}
+
+export function isBlockedPage(extracted) {
+  const text = `${extracted.title || ""}\n${extracted.bodyText || ""}\n${extracted.canonicalUrl || ""}`;
+  return /安全限制|IP存在风险|error_code=300012|请切换可靠网络环境|website-login\/error/.test(text);
+}
+
+export function isCaptchaPage(extracted) {
+  const text = `${extracted.title || ""}\n${extracted.bodyText || ""}\n${extracted.canonicalUrl || ""}`;
+  return /website-login\/captcha|滑动太频繁|请稍后再试|verifyType=|当前网络环境|操作过于频繁|验证码/.test(text);
+}
+
+export function isUnavailablePage(extracted) {
+  const text = `${extracted.title || ""}\n${extracted.bodyText || ""}`;
+  return /当前笔记暂时无法浏览|笔记不存在|内容无法查看|该内容暂时无法查看/.test(text);
+}
+
+export function isUiAsset(url) {
+  const lower = String(url || "").toLowerCase();
+  let parsed = null;
+  try { parsed = new URL(url); } catch { return true; }
+  const path = parsed.pathname.replaceAll("/", "");
+  return (
+    !path || path.length < 12 ||
+    lower.includes("fe-static.xhscdn.com") || lower.includes("fe-platform.xhscdn.com") ||
+    lower.includes("fe-video-qc.xhscdn.com/fe-platform") || lower.includes("dc.xhscdn.com/") ||
+    lower.includes("fe-picasso") || lower.includes("picasso-static.xiaohongshu.com") ||
+    lower.includes("picasso-private-1251524319.cos.ap-shanghai.myqcloud.com") ||
+    lower.includes("sns-avatar") || lower.startsWith("data:image/svg")
+  );
+}
+
+export function uniqueByUrl(items) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const url = cleanAssetUrl(item.url || item.sourceUrl);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    result.push({ ...item, url });
+  }
+  return result;
+}
+
+export function findInstalledBrowser() {
+  const candidates = [
+    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE,
+    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe"
+  ].filter(Boolean);
+  return candidates.find((file) => existsSync(file)) || "";
+}
+
+export async function getPlaywright() {
+  const localRequire = createRequire(import.meta.url);
+  try { return localRequire("playwright"); } catch (error) {
+    const runtimeNodeModules = path.resolve(path.dirname(process.execPath), "..", "node_modules");
+    const pnpmDir = path.join(runtimeNodeModules, ".pnpm");
+    const pnpmPlaywrightPackage = existsSync(pnpmDir) ? readdirSync(pnpmDir).find((name) => /^playwright@/.test(name)) : "";
+    const candidatePackageJsons = [
+      pnpmPlaywrightPackage ? path.join(pnpmDir, pnpmPlaywrightPackage, "node_modules", "package.json") : "",
+      path.join(runtimeNodeModules, "package.json")
+    ].filter(Boolean);
+    const runtimeErrors = [];
+    for (const candidate of candidatePackageJsons) {
+      try {
+        const runtimeRequire = createRequire(candidate);
+        return runtimeRequire("playwright");
+      } catch (runtimeError) { runtimeErrors.push(`${candidate}: ${runtimeError.message}`); }
+    }
+    try { return await import("playwright"); } catch (importError) {
+      throw new Error(`未找到 Playwright。请先运行 npm install，或使用 Codex 内置 Node 运行时启动工具。项目内错误：${error.message}；运行时错误：${runtimeErrors.join("；")}；ESM错误：${importError.message}`);
+    }
+  }
+}
+
+/** 统一浏览器启动：检测可执行文件 → 优先使用系统 Chrome → 反检测参数 → launch */
+export async function createBrowser(rootDir, options = {}) {
+  const { chromium } = await getPlaywright();
+  const settings = envWithSettings(rootDir);
+  const headless = options.headless ?? settings.xhs.headless;
+  const launchOpts = {
+    headless,
+    args: [
+      "--disable-quic",
+      "--no-first-run",
+      "--no-default-browser-check",
+      "--disable-component-update",
+      "--disable-sync",
+      "--disable-background-networking",
+      "--disable-features=ChromeWhatsNewUI",
+      "--window-size=1440,960"
+    ]
+  };
+  const proxy = options.proxy || settings.xhs.proxy || "";
+  if (proxy) launchOpts.proxy = { server: proxy };
+
+  // 优先使用系统安装的 Chrome（浏览器签名更完整，不易被检测为机器人）
+  const systemChrome = settings.xhs.browserExecutable || findInstalledBrowser();
+  if (systemChrome) {
+    launchOpts.executablePath = systemChrome;
+  } else {
+    const bundled = chromium.executablePath();
+    if (existsSync(bundled)) launchOpts.executablePath = bundled;
+  }
+  const browser = await chromium.launch(launchOpts);
+  const context = await browser.newContext({
+    viewport: { width: 1440, height: 960 },
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    locale: "zh-CN",
+    timezoneId: "Asia/Shanghai",
+    permissions: [],
+    deviceScaleFactor: 1
+  });
+  return { browser, context };
+}
+
+export async function openXhsContext(rootDir, cookieOverride = "", optionOverrides = {}) {
+  const { browser, context } = await createBrowser(rootDir, optionOverrides);
+  const cookie = readXhsCookie(rootDir, cookieOverride);
+  if (cookie) await context.addCookies(cookieStringToPlaywrightCookies(cookie));
+  // 重写 close 方法，确保同时关闭浏览器进程
+  const origClose = context.close.bind(context);
+  context.close = async () => { await origClose(); try { await browser.close(); } catch {} };
+  return context;
+}
+
+export function attachResponseCollector(page, bodies) {
+  page.on("response", async (response) => {
+    const responseUrl = response.url();
+    if (!/(xiaohongshu|xhscdn|sns-img|sns-video|sns-webpic)/i.test(responseUrl)) return;
+    const contentType = response.headers()["content-type"] || "";
+    if (!/(json|text|javascript)/i.test(contentType) && !/api\/sns|web\/v\d/i.test(responseUrl)) return;
+    try {
+      const text = await response.text();
+      if (text && text.length < 4_000_000) bodies.push({ url: responseUrl, contentType, text });
+    } catch {}
+  });
+}
+
+export function collectAssetsFromBodies(bodies) {
+  const assets = [];
+  for (const body of bodies) {
+    const normalized = decodeLoose(body.text);
+    const directUrls = Array.from(normalized.matchAll(/https?:\/\/[^"'<>\s\\]+/g)).map((match) => ({ url: match[0], source: `network:${body.url}` }));
+    assets.push(...directUrls);
+    try {
+      const parsed = JSON.parse(body.text);
+      walkJson(parsed, assets, `json:${body.url}`);
+    } catch {}
+  }
+  return assets.map((a) => ({ ...a, url: cleanAssetUrl(a.url) }))
+    .map((a) => ({ kind: classifyUrl(a.url), url: a.url, source: a.source }))
+    .filter((a) => a.kind !== "unknown");
+}
+
+function walkJson(value, output, source) {
+  if (Array.isArray(value)) { for (const item of value) walkJson(item, output, source); return; }
+  if (value && typeof value === "object") { for (const item of Object.values(value)) walkJson(item, output, source); return; }
+  if (typeof value === "string") {
+    const normalized = decodeLoose(value);
+    const urls = Array.from(normalized.matchAll(/https?:\/\/[^"'<>\s\\]+/g)).map((m) => ({ url: m[0], source }));
+    output.push(...urls);
+  }
+}
+
+export function parseInitState(html) {
+  const idx = html.indexOf("__INITIAL_STATE__");
+  if (idx < 0) return null;
+  const scriptStart = html.slice(0, idx).lastIndexOf("<script");
+  if (scriptStart < 0) return null;
+  const fromScript = html.slice(scriptStart);
+  const scriptEnd = fromScript.indexOf("</script>");
+  if (scriptEnd < 0) return null;
+  const eqPos = fromScript.indexOf("=");
+  const braceStart = fromScript.indexOf("{", eqPos);
+  const braceEnd = fromScript.lastIndexOf("}");
+  if (braceStart < 0 || braceEnd < 0) return null;
+  let jsonStr = fromScript.slice(braceStart, braceEnd + 1);
+  jsonStr = jsonStr.replace(/\bundefined\b/g, "null").replace(/\bNaN\b/g, "null");
+  try { return JSON.parse(jsonStr); } catch { return null; }
+}
+
+export function normalizeIndexes(index) {
+  if (!Array.isArray(index) || !index.length) return null;
+  const values = index.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0);
+  return values.length ? new Set(values) : null;
+}
+
+export function filterByIndexes(items, indexes) {
+  if (!indexes) return items;
+  return items.filter((_, position) => indexes.has(position + 1));
+}
+
+export { sleep };
