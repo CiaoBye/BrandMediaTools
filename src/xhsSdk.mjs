@@ -422,40 +422,11 @@ if (navigator.connection) {
 `;
 
 async function tryConnectCdp(chromium, cdpPort) {
-  // 尝试连接已有 Chrome（用户可能手动开启了 --remote-debugging-port）
   try {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
     const contexts = browser.contexts();
     return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
   } catch { return null; }
-}
-
-async function launchSystemChrome(chromium, options = {}) {
-  // 用 Playwright 启动系统 Chrome，共享真实用户数据目录和 Cookie
-  const launchOpts = { headless: false, channel: "chrome", args: [
-    "--disable-quic", "--no-first-run", "--no-default-browser-check",
-    "--disable-sync", "--disable-background-networking",
-    "--disable-blink-features=AutomationControlled",
-    "--window-size=1440,960"
-  ]};
-  const proxy = options.proxy || "";
-  if (proxy) launchOpts.proxy = { server: proxy };
-  const browser = await chromium.launch(launchOpts);
-  const viewports = [
-    { width: 1440, height: 900 }, { width: 1536, height: 864 },
-    { width: 1366, height: 768 }, { width: 1920, height: 1080 },
-    { width: 1280, height: 800 }
-  ];
-  const context = await browser.newContext({
-    viewport: viewports[Math.floor(Math.random() * viewports.length)],
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-    locale: "zh-CN", timezoneId: "Asia/Shanghai",
-    permissions: ["geolocation"], deviceScaleFactor: 1,
-    colorScheme: "light"
-  });
-  // 注入隐形脚本（常规模式才需要，CDP 模式不注入）
-  await context.addInitScript({ content: STEALTH_SCRIPT });
-  return { browser, context, isCdp: false };
 }
 
 export async function createBrowser(rootDir, options = {}) {
@@ -468,14 +439,17 @@ export async function createBrowser(rootDir, options = {}) {
   let browser, context, isCdp = false;
 
   if (useCdp && cdpPort > 0) {
-    // CDP 模式：优先连接已有 Chrome（用户可能已手动开启调试端口）
+    // CDP 模式：仅连接已有 Chrome，不启动新进程
     const cdpResult = await tryConnectCdp(chromium, cdpPort);
     if (cdpResult) {
       browser = cdpResult.browser; context = cdpResult.context; isCdp = true;
     } else {
-      // CDP 连不上，用 Playwright 启动系统 Chrome（channel:chrome 共享真实用户数据）
-      const result = await launchSystemChrome(chromium, options);
-      browser = result.browser; context = result.context; isCdp = false;
+      throw new Error(
+        `CDP 连接失败（端口 ${cdpPort}）。\n` +
+        `CDP 模式仅连接你已运行的 Chrome，不会额外启动浏览器。\n` +
+        `请先用以下命令启动 Chrome（然后登录小红书再试）：\n` +
+        `  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=${cdpPort}`
+      );
     }
   } else {
     // 常规模式：启动 Playwright 浏览器
