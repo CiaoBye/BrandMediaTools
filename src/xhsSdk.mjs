@@ -1,5 +1,5 @@
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { cookieStringToPlaywrightCookies, readXhsCookie } from "./xhsAuth.mjs";
@@ -429,6 +429,33 @@ async function tryConnectCdp(chromium, cdpPort) {
   } catch { return null; }
 }
 
+function killChrome() {
+  try { execSync("taskkill /f /im chrome.exe >nul 2>&1", { stdio: "ignore" }); } catch {}
+}
+
+export async function launchCdpChrome(cdpPort) {
+  killChrome();
+  for (let i = 0; i < 20; i++) {
+    try { execSync("tasklist /fi \"imagename eq chrome.exe\" /nh", { stdio: "pipe" }); } catch { break; }
+    await sleep(300);
+  }
+  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+  const userDataDir = path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "User Data");
+  spawn(chromePath, [
+    `--remote-debugging-port=${cdpPort}`, `--user-data-dir="${userDataDir}"`,
+    "--no-first-run", "--no-default-browser-check",
+  ], { detached: true, stdio: "ignore" });
+  for (let i = 0; i < 30; i++) {
+    await sleep(1000);
+    try {
+      const browser = await (await getPlaywright()).chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+      const contexts = browser.contexts();
+      return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
+    } catch { /* 继续等待 */ }
+  }
+  throw new Error(`Chrome CDP 自动启动失败。请手动结束所有 Chrome 进程后，以 --remote-debugging-port=${cdpPort} 重新启动。`);
+}
+
 export async function createBrowser(rootDir, options = {}) {
   const { chromium } = await getPlaywright();
   const settings = envWithSettings(rootDir);
@@ -439,17 +466,14 @@ export async function createBrowser(rootDir, options = {}) {
   let browser, context, isCdp = false;
 
   if (useCdp && cdpPort > 0) {
-    // CDP 模式：仅连接已有 Chrome，不启动新进程
     const cdpResult = await tryConnectCdp(chromium, cdpPort);
     if (cdpResult) {
       browser = cdpResult.browser; context = cdpResult.context; isCdp = true;
     } else {
-      throw new Error(
-        `CDP 连接失败（端口 ${cdpPort}）。\n` +
-        `CDP 模式仅连接你已运行的 Chrome，不会额外启动浏览器。\n` +
-        `请先用以下命令启动 Chrome（然后登录小红书再试）：\n` +
-        `  "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe" --remote-debugging-port=${cdpPort}`
-      );
+      // 自动关闭已有 Chrome + 启动带 CDP 的 Chrome
+      console.log("[CDP] 未检测到调试端口，尝试自动启动 CDP Chrome...");
+      const result = await launchCdpChrome(cdpPort);
+      browser = result.browser; context = result.context; isCdp = true;
     }
   } else {
     // 常规模式：启动 Playwright 浏览器
@@ -490,7 +514,6 @@ export async function createBrowser(rootDir, options = {}) {
   return { browser, context, isCdp };
 }
 
-// CDP 模式无需清理（连接已有 Chrome，不启动新进程）
 export function cleanupCdpChrome() {}
 
 export async function openXhsContext(rootDir, cookieOverride = "", optionOverrides = {}) {
