@@ -18,6 +18,7 @@ import { startScheduler, stopScheduler, runHealthCheckNow } from "./scheduler.mj
 import { fmtDate } from "./time.mjs";
 import { Logger } from "./logger.mjs";
 import { sendWebhook } from "./webhook.mjs";
+import { startSignServer, stopSignServer } from "./xhsApiClient.mjs";
 import { exportForEagle } from "./eagleExporter.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -777,7 +778,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 startScheduler(rootDir, storage);
+startSignServer(rootDir).catch((e) => console.warn("[signserver] 启动失败:", e.message));
 async function cleanupOnExit() {
+  stopSignServer();
   try { const m = await import('./xhsSdk.mjs'); if (m.cleanupCdpChrome) m.cleanupCdpChrome(); } catch {}
   stopScheduler();
 }
