@@ -775,9 +775,13 @@ const server = http.createServer(async (req, res) => {
 });
 
 startScheduler(rootDir, storage);
-process.on("exit", () => stopScheduler());
-process.on("SIGINT", () => { stopScheduler(); process.exit(); });
-process.on("SIGTERM", () => { stopScheduler(); process.exit(); });
+async function cleanupOnExit() {
+  try { const m = await import('./xhsSdk.mjs'); if (m.cleanupCdpChrome) m.cleanupCdpChrome(); } catch {}
+  stopScheduler();
+}
+process.on("exit", () => cleanupOnExit());
+process.on("SIGINT", async () => { await cleanupOnExit(); process.exit(); });
+process.on("SIGTERM", async () => { await cleanupOnExit(); process.exit(); });
 
 server.listen(port, "127.0.0.1", () => {
   console.log(`小红书品牌内容情报工具已启动：http://127.0.0.1:${port}`);

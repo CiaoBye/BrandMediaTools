@@ -1,4 +1,5 @@
 import path from "node:path";
+import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { cookieStringToPlaywrightCookies, readXhsCookie } from "./xhsAuth.mjs";
@@ -420,6 +421,39 @@ if (navigator.connection) {
 }
 `;
 
+// CDP 模式下自动启动的 Chrome 进程引用（用于关闭时清理）
+let _cdpChromeProcess = null;
+
+async function connectOrLaunchCdp(rootDir, chromium, cdpPort) {
+  // 先尝试连接已有 Chrome
+  try {
+    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    const contexts = browser.contexts();
+    return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
+  } catch {
+    // 连接失败，自动启动 Chrome
+    const settings = envWithSettings(rootDir);
+    const chromePath = settings.xhs.browserExecutable || findInstalledBrowser();
+    if (!chromePath) throw new Error("未找到 Chrome 浏览器，请先安装 Chrome 或手动指定浏览器路径");
+    console.log(`[CDP] 启动 Chrome (${chromePath}) --remote-debugging-port=${cdpPort}`);
+    const proc = spawn(chromePath, [`--remote-debugging-port=${cdpPort}`, "--no-first-run", "--no-default-browser-check"], {
+      stdio: "ignore", detached: true
+    });
+    proc.unref();
+    _cdpChromeProcess = proc;
+    // 等待端口就绪（最多等 15 秒）
+    for (let i = 0; i < 30; i++) {
+      await sleep(500);
+      try {
+        const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+        const contexts = browser.contexts();
+        return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
+      } catch { /* 继续等待 */ }
+    }
+    throw new Error(`Chrome 启动后无法连接 CDP 端口 ${cdpPort}，请手动启动 Chrome 并添加 --remote-debugging-port=${cdpPort}`);
+  }
+}
+
 export async function createBrowser(rootDir, options = {}) {
   const { chromium } = await getPlaywright();
   const settings = envWithSettings(rootDir);
@@ -427,14 +461,12 @@ export async function createBrowser(rootDir, options = {}) {
   const useCdp = options.cdpPort > 0 || settings.xhs.cdpPort > 0;
   const cdpPort = options.cdpPort || settings.xhs.cdpPort || 0;
 
-  let browser, context;
+  let browser, context, isCdp = false;
 
   if (useCdp && cdpPort > 0) {
-    // CDP 模式：连接用户已打开的 Chrome（保留真实浏览器指纹）
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-    // CDP 连接已有默认 context，不额外 create
-    const contexts = browser.contexts();
-    context = contexts[0] || await browser.newContext();
+    // CDP 模式：连接已有 Chrome，或自动启动一个（保留真实浏览器指纹）
+    const result = await connectOrLaunchCdp(rootDir, chromium, cdpPort);
+    browser = result.browser; context = result.context; isCdp = true;
   } else {
     // 常规模式：启动 Playwright 浏览器
     const launchOpts = {
@@ -483,16 +515,29 @@ export async function createBrowser(rootDir, options = {}) {
     await context.addInitScript({ content: STEALTH_SCRIPT });
   }
 
-  return { browser, context };
+  return { browser, context, isCdp };
+}
+
+// 清理自动启动的 Chrome 进程
+export function cleanupCdpChrome() {
+  if (_cdpChromeProcess) {
+    try { _cdpChromeProcess.kill(); } catch {}
+    _cdpChromeProcess = null;
+  }
 }
 
 export async function openXhsContext(rootDir, cookieOverride = "", optionOverrides = {}) {
-  const { browser, context } = await createBrowser(rootDir, optionOverrides);
-  const cookie = readXhsCookie(rootDir, cookieOverride);
-  if (cookie) await context.addCookies(cookieStringToPlaywrightCookies(cookie));
-  // 重写 close 方法，确保同时关闭浏览器进程
+  const { browser, context, isCdp } = await createBrowser(rootDir, optionOverrides);
+  if (!isCdp) {
+    const cookie = readXhsCookie(rootDir, cookieOverride);
+    if (cookie) await context.addCookies(cookieStringToPlaywrightCookies(cookie));
+  }
+  // CDP 模式：不关闭用户真实浏览器；常规模式：关闭 Playwright 进程
   const origClose = context.close.bind(context);
-  context.close = async () => { await origClose(); try { await browser.close(); } catch {} };
+  context.close = async () => {
+    await origClose();
+    if (!isCdp) { try { await browser.close(); } catch {} }
+  };
   return context;
 }
 
