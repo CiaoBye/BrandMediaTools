@@ -325,13 +325,15 @@ route("POST", "/api/follow/crawl", async (req, res) => {
   if (!userId && body.authorUrl) { const { extractXhsId } = await import("./xhsSdk.mjs"); userId = extractXhsId(body.authorUrl); }
   if (!userId) { sendJson(res, 400, { error: "请提供 userId 或账号主页链接" }); return; }
   try {
+    const settings = (await import("./settings.mjs")).envWithSettings(rootDir);
+    const useCdp = settings.xhs.cdpPort > 0;
     const cookieRaw = resolveCookie(rootDir, storage);
-    if (!cookieRaw) { sendJson(res, 400, { error: "未找到有效的登录 Cookie。请通过「账号管理」扫码登录或粘贴 Cookie。" }); return; }
+    if (!cookieRaw && !useCdp) { sendJson(res, 400, { error: "未找到有效的登录 Cookie。请通过「账号管理」扫码登录或粘贴 Cookie，或开启 CDP 模式使用 Chrome 自带登录态。" }); return; }
     const { followAccount } = await import("./xhsCrawler.mjs");
     const followed = storage.getFollowedAccountByUserId(userId);
     let knownNoteIds = [];
     try { knownNoteIds = JSON.parse(followed?.last_cursor || "[]"); } catch {}
-    const result = await followAccount({ userId, authorUrl: body.authorUrl, brand: body.brand, knownNoteIds }, { rootDir, cookie: cookieRaw });
+    const result = await followAccount({ userId, authorUrl: body.authorUrl, brand: body.brand, knownNoteIds }, { rootDir, cookie: cookieRaw || "", cdpPort: useCdp ? (settings.xhs.cdpPort || 9222) : 0 });
     let newCount = 0;
     for (const note of result.notes) {
       if (!storage.findNoteBySourceUrl(note.sourceUrl)) {

@@ -186,7 +186,7 @@ export async function followAccount(input, options = {}) {
   }
   if (headless === undefined) headless = false;
   const context = await openXhsContext(rootDir, options.cookie || "", {
-    proxy: options.proxy || "", headless
+    proxy: options.proxy || "", headless, cdpPort: options.cdpPort || 0
   });
   try {
     const page = await context.newPage();

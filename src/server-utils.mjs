@@ -1,6 +1,6 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import path from "node:path";
-import { parseBool } from "./settings.mjs";
+import { parseBool, envWithSettings } from "./settings.mjs";
 import { extractXhsUrls } from "./xhsSdk.mjs";
 import { crawlXhs } from "./xhsCrawler.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
@@ -112,6 +112,8 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
     const jobId = storage.createJob(parsedUrl);
     jobs.push(jobId);
     try {
+      const settings = envWithSettings(rootDir);
+      const cdpPort = settings.xhs.cdpPort || 0;
       const notes = await crawlXhs(
         {
           url: parsedUrl,
@@ -122,7 +124,7 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
           index: body.index || [],
           cookie: body.cookie || ""
         },
-        { rootDir, maxNotes: body.maxNotes, cookie: body.cookie || "", proxy: body.proxy || "" }
+        { rootDir, maxNotes: body.maxNotes, cookie: body.cookie || "", proxy: body.proxy || "", cdpPort }
       );
 
       for (const note of notes) {
@@ -234,7 +236,6 @@ export async function diagnose(rootDir, storage) {
     const hasBundled = existsSync(exePath);
     let browserName = hasBundled ? "bundled" : "";
     if (!hasBundled) {
-      const { envWithSettings } = await import("./settings.mjs");
       const s = envWithSettings(rootDir);
       browserName = s.xhs.browserExecutable || "自动查找";
     }

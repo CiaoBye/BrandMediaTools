@@ -15,7 +15,7 @@ async function crawlWithFallback(input, options = {}) {
   let context = null;
   try {
     context = await openXhsContext(rootDir, options.cookie || input.cookie || "", {
-      proxy: options.proxy || input.proxy || "", headless
+      proxy: options.proxy || input.proxy || "", headless, cdpPort: options.cdpPort || 0
     });
     const page = await context.newPage();
     const networkBodies = [];
