@@ -1744,9 +1744,9 @@ function renderCrawlTab() {
     ${renderText("xhs.proxy", "代理地址", "如 http://127.0.0.1:10808", s.proxy)}
     ${renderText("xhs.userAgent", "User-Agent（用户代理）", "", s.userAgent)}
     ${renderText("xhs.browserExecutable", "浏览器路径", "留空自动寻找", s.browserExecutable)}
-    ${renderBool("xhs.useCdp", "CDP 模式（连接已有Chrome）", "连接到你已经登录小红书的Chrome来提取Cookie。需要Chrome以 --remote-debugging-port=9222 启动", s.useCdp)}
+    ${renderBool("xhs.useCdp", "CDP 模式（自动启动）", "自动关闭旧Chrome → 以调试模式重启Chrome → 连接提取Cookie。一键操作，无需手动", s.useCdp)}
     ${renderNum("xhs.cdpPort", "Chrome 调试端口", s.cdpPort || 9222)}
-    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">先完全关闭所有Chrome，然后运行：<code style="font-size:10px">"C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222</code> → 登录小红书 → 点「从 Chrome 提取 Cookie」</div>
+    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">开启后，点「从 Chrome 提取 Cookie」自动执行：① 强杀旧Chrome → ② 以 --remote-debugging-port 启动 → ③ 提取 Cookie → ④ 保存。你只需在弹窗中登录小红书</div>
   </div>`;
 }
 
