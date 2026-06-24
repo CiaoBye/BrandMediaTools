@@ -135,6 +135,10 @@ export function scoreXhsNoteUrl(url) {
   return score;
 }
 
+export function randomDelay(min = 800, max = 2500) {
+  return sleep(Math.floor(Math.random() * (max - min + 1)) + min);
+}
+
 export function mergeXhsLinks(inputUrls = [], extractedLinks = []) {
   const byNoteId = new Map();
   const looseLinks = [];
@@ -345,43 +349,140 @@ export async function getPlaywright() {
 }
 
 /** 统一浏览器启动：检测可执行文件 → 优先使用系统 Chrome → 反检测参数 → launch */
+// 反自动化检测脚本 — 注入到每个页面，隐藏 Playwright/Chromium 自动化痕迹
+const STEALTH_SCRIPT = `
+// 1. 隐藏 webdriver 属性（Playwright 默认不设，但某些检测仍可探知）
+Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+
+// 2. 伪造 chrome.runtime（检测脚本常检查此对象）
+if (!window.chrome) { window.chrome = {}; }
+if (!window.chrome.runtime) {
+  const connections = new Map();
+  window.chrome.runtime = {
+    id: undefined, lastError: undefined,
+    connect: () => ({ onMessage: { addListener: () => {} }, onDisconnect: { addListener: () => {} }, postMessage: () => {} }),
+    sendMessage: () => Promise.resolve(),
+    onMessage: { addListener: () => {} },
+    onConnect: { addListener: () => {} },
+    onConnectExternal: { addListener: () => {} }
+  };
+}
+
+// 3. 补全 navigator.plugins（无头浏览器返回空数组）
+Object.defineProperty(navigator, 'plugins', {
+  get: () => [1, 2, 3, 4, 5].map(i => ({ name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' }))
+});
+Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] });
+Object.defineProperty(navigator, 'mimeTypes', { get: () => [1, 2, 3, 4].map(i => ({ type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' })) });
+
+// 4. 修正 permissions API（无头浏览器可能暴露）
+if (navigator.permissions && navigator.permissions.query) {
+  const origQuery = navigator.permissions.query.bind(navigator.permissions);
+  navigator.permissions.query = (desc) => {
+    if (desc.name === 'notifications' || desc.name === 'clipboard-read' || desc.name === 'clipboard-write') {
+      return Promise.resolve({ state: 'prompt', onchange: null });
+    }
+    return origQuery(desc);
+  };
+}
+
+// 5. 固定 hardwareConcurrency（防指纹检测差异）
+Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 });
+Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 });
+
+// 6. 覆盖 WebGL 指纹
+const getExt = HTMLCanvasElement.prototype.getContext;
+HTMLCanvasElement.prototype.getContext = function(type, attrs) {
+  const ctx = getExt.call(this, type, attrs);
+  if (ctx && type === 'webgl' || type === 'webgl2') {
+    const origGetParam = ctx.getParameter;
+    ctx.getParameter = function(p) {
+      if (p === 37445) return 'Google Inc.';
+      if (p === 37446) return 'ANGLE (Intel, Intel(R) UHD Graphics (0x0000A781) Direct3D11 vs_5_0 ps_5_0)';
+      if (p === 3415) return 'WebGL 1.0 (OpenGL ES 2.0 Chromium)';
+      return origGetParam.call(this, p);
+    };
+    const origGetExt = ctx.getExtension;
+    ctx.getExtension = function(name) {
+      const ext = origGetExt.call(this, name);
+      if (name === 'WEBGL_debug_renderer_info') return null;
+      return ext;
+    };
+  }
+  return ctx;
+};
+
+// 7. 覆盖 navigator.connection（某些检测检查网络信息）
+if (navigator.connection) {
+  Object.defineProperty(navigator.connection, 'rtt', { get: () => 50 });
+  Object.defineProperty(navigator.connection, 'downlink', { get: () => 10 });
+  Object.defineProperty(navigator.connection, 'effectiveType', { get: () => '4g' });
+}
+`;
+
 export async function createBrowser(rootDir, options = {}) {
   const { chromium } = await getPlaywright();
   const settings = envWithSettings(rootDir);
   const headless = options.headless ?? settings.xhs.headless;
-  const launchOpts = {
-    headless,
-    args: [
-      "--disable-quic",
-      "--no-first-run",
-      "--no-default-browser-check",
-      "--disable-component-update",
-      "--disable-sync",
-      "--disable-background-networking",
-      "--disable-features=ChromeWhatsNewUI",
-      "--window-size=1440,960"
-    ]
-  };
-  const proxy = options.proxy || settings.xhs.proxy || "";
-  if (proxy) launchOpts.proxy = { server: proxy };
+  const useCdp = options.cdpPort > 0 || settings.xhs.cdpPort > 0;
+  const cdpPort = options.cdpPort || settings.xhs.cdpPort || 0;
 
-  // 优先使用系统安装的 Chrome（浏览器签名更完整，不易被检测为机器人）
-  const systemChrome = settings.xhs.browserExecutable || findInstalledBrowser();
-  if (systemChrome) {
-    launchOpts.executablePath = systemChrome;
+  let browser, context;
+
+  if (useCdp && cdpPort > 0) {
+    // CDP 模式：连接用户已打开的 Chrome（保留真实浏览器指纹）
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+    // CDP 连接已有默认 context，不额外 create
+    const contexts = browser.contexts();
+    context = contexts[0] || await browser.newContext();
   } else {
-    const bundled = chromium.executablePath();
-    if (existsSync(bundled)) launchOpts.executablePath = bundled;
+    // 常规模式：启动 Playwright 浏览器
+    const launchOpts = {
+      headless,
+      args: [
+        "--disable-quic",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--disable-component-update",
+        "--disable-sync",
+        "--disable-background-networking",
+        "--disable-features=ChromeWhatsNewUI",
+        "--disable-blink-features=AutomationControlled",
+        "--window-size=1440,960"
+      ]
+    };
+    const proxy = options.proxy || settings.xhs.proxy || "";
+    if (proxy) launchOpts.proxy = { server: proxy };
+
+    const systemChrome = settings.xhs.browserExecutable || findInstalledBrowser();
+    if (systemChrome) {
+      launchOpts.executablePath = systemChrome;
+    } else {
+      const bundled = chromium.executablePath();
+      if (existsSync(bundled)) launchOpts.executablePath = bundled;
+    }
+    browser = await chromium.launch(launchOpts);
+
+    const viewports = [
+      { width: 1440, height: 900 }, { width: 1536, height: 864 },
+      { width: 1366, height: 768 }, { width: 1920, height: 1080 },
+      { width: 1280, height: 800 }
+    ];
+    const viewport = viewports[Math.floor(Math.random() * viewports.length)];
+    context = await browser.newContext({
+      viewport,
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+      locale: "zh-CN",
+      timezoneId: "Asia/Shanghai",
+      permissions: ["geolocation"],
+      deviceScaleFactor: 1,
+      isMobile: false,
+      hasTouch: false,
+      colorScheme: "light"
+    });
+    await context.addInitScript({ content: STEALTH_SCRIPT });
   }
-  const browser = await chromium.launch(launchOpts);
-  const context = await browser.newContext({
-    viewport: { width: 1440, height: 960 },
-    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-    locale: "zh-CN",
-    timezoneId: "Asia/Shanghai",
-    permissions: [],
-    deviceScaleFactor: 1
-  });
+
   return { browser, context };
 }
 

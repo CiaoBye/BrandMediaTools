@@ -3,7 +3,7 @@ import { readXhsCookie } from "../xhsAuth.mjs";
 import {
   extractXhsId, isXhsNoteUrl, normalizeXhsNoteUrl, scoreXhsNoteUrl,
   openXhsContext, attachResponseCollector,
-  sleep, parseInitState
+  sleep, randomDelay, parseInitState
 } from "../xhsSdk.mjs";
 import { fetchNoteViaHttp, extractNote } from "./extract.mjs";
 
@@ -191,9 +191,12 @@ export async function followAccount(input, options = {}) {
   try {
     const page = await context.newPage();
     const profileUrl = `https://www.xiaohongshu.com/user/profile/${userId}`;
+    await randomDelay(500, 1500);
     try {
-      await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
+      await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 60000 });
+      await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
     } catch (navError) { console.error("[followAccount] 导航到 profile 页失败:", navError.message); }
+    await randomDelay(800, 2000);
     if (!headless) {
       let waited = 0;
       while (waited < 120) {
@@ -298,6 +301,7 @@ export async function followAccount(input, options = {}) {
       if (!noteId || seenNoteIds.has(noteId)) continue;
       if (!isFirstFollow && knownNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
       seenNoteIds.add(noteId);
+      await randomDelay(800, 2500);
 
       const httpResult = await fetchNoteViaHttp({ ...input, url }, { ...options, rootDir }).catch(() => null);
       if (httpResult && httpResult.length > 0) {
@@ -314,7 +318,7 @@ export async function followAccount(input, options = {}) {
         const childBodies = [];
         attachResponseCollector(child, childBodies);
         await child.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
-        await sleep(3000);
+        await child.waitForLoadState("networkidle", { timeout: 10000 }).catch(() => {});
         const noteData = await extractNote(child, { ...input, url }, childBodies, options.videoPreference || "", options.videoMinHeight || 0);
         if (noteData) {
           noteData.accountId = input.accountId || null;

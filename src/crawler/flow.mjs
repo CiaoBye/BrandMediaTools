@@ -20,7 +20,8 @@ async function crawlWithFallback(input, options = {}) {
     const page = await context.newPage();
     const networkBodies = [];
     attachResponseCollector(page, networkBodies);
-    await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 45000 });
+    await page.goto(input.url, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForLoadState("networkidle", { timeout: 15000 }).catch(() => {});
     if (!headless) {
       let waited = 0;
       while (waited < 60) {
@@ -30,7 +31,6 @@ async function crawlWithFallback(input, options = {}) {
         waited += 3;
       }
     }
-    await sleep(3500);
     if (isAccountUrl(input.url)) return await extractAccountNotes(page, input, options);
     const note = await extractNote(page, input, networkBodies, options.videoPreference || settings.download.videoPreference || "resolution", options.videoMinHeight || settings.download.videoMinHeight || 0);
     if (note && (hasUsableAssets(note) || note.status !== "需人工复核")) return [note];
