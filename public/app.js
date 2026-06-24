@@ -1019,6 +1019,16 @@ $("#addAccountPasteBtn")?.addEventListener("click", () => {
   area.style.display = area.style.display === "none" ? "block" : "none";
 });
 
+$("#extractCookieBtn")?.addEventListener("click", async () => {
+  const btn = $("#extractCookieBtn");
+  btn.disabled = true; btn.textContent = "提取中…";
+  try {
+    const r = await api("/api/settings/xhs-cookie/from-browser", { method: "POST", body: "{}" });
+    alert(`✅ Cookie 提取成功！共 ${r.cookieCount} 个字段，已保存到 ${r.cookiePath}`);
+  } catch (e) { alert(`❌ 提取失败：${e.message}`); }
+  finally { btn.disabled = false; btn.textContent = "从 Chrome 提取 Cookie"; }
+});
+
 $("#savePastedCookie")?.addEventListener("click", async () => {
   const cookie = $("#pasteCookieInput").value.trim();
   const name = $("#xhsAccountName").value.trim() || "账号-" + Date.now().toString(36);

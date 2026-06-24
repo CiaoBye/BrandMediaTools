@@ -141,3 +141,37 @@ export async function fetchComments(noteId, cursor = "", topCommentId = "", imag
 export async function fetchUserInfo(userId, cookieStr = "") {
   return apiPost("/api/sns/web/v1/user/selfinfo", cookieStr, { user_id: userId });
 }
+
+/** CDP Chrome → 提取小红书 Cookie → 保存到文件 */
+export async function extractAndSaveCookies(rootDir, cookieFile) {
+  const { openXhsContext } = await import("./xhsSdk.mjs");
+  const { writeFileSync } = await import("node:fs");
+  const { envWithSettings } = await import("./settings.mjs");
+  const settings = envWithSettings(rootDir);
+
+  const opts = {};
+  // CDP 模式或系统 Chrome
+  if (settings.xhs.cdpPort > 0) opts.cdpPort = settings.xhs.cdpPort;
+  const context = await openXhsContext(rootDir, "", opts);
+
+  try {
+    const page = await context.newPage();
+    await page.goto("https://www.xiaohongshu.com/explore", {
+      waitUntil: "domcontentloaded", timeout: 30000,
+    });
+    // 等登录态加载
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // 提取 xiaohongshu.com 的 cookies
+    const cookies = await context.cookies("https://www.xiaohongshu.com");
+    const parts = cookies.map((c) => `${c.name}=${c.value}`);
+    const cookieStr = parts.join("; ");
+
+    const filePath = cookieFile || path.join(rootDir, "data", "xhs-cookie.txt");
+    writeFileSync(filePath, cookieStr, "utf8");
+    console.log(`[xhsApi] Cookie 已保存到 ${filePath} (${parts.length} 个字段)`);
+    return { ok: true, count: parts.length, hasA1: parts.some((p) => p.startsWith("a1=")), hasWebSession: parts.some((p) => p.startsWith("web_session=")) };
+  } finally {
+    try { await context.close(); } catch {}
+  }
+}

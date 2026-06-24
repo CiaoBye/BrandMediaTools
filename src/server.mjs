@@ -648,6 +648,18 @@ route("POST", "/api/settings/xhs-cookie/from-browser", async (req, res) => {
   } catch (error) { sendJson(res, 500, { ok: false, error: error.message }); }
 });
 
+// ===== xhs API (pure HTTP, no browser) =====
+route("POST", "/api/xhs/test-api", async (req, res) => {
+  try {
+    const cookieRaw = await (await import("./xhsAuth.mjs")).readXhsCookie(rootDir);
+    if (!cookieRaw) { sendJson(res, 400, { error: "无已保存的 Cookie。请先通过「账号管理」→「从 Chrome 提取 Cookie」获取登录态。" }); return; }
+    const { fetchUserInfo, startSignServer } = await import("./xhsApiClient.mjs");
+    await startSignServer(rootDir).catch(() => {});
+    const result = await fetchUserInfo("", cookieRaw);
+    sendJson(res, 200, { ok: result.success === true, data: result.data || result.msg });
+  } catch (error) { sendJson(res, 500, { error: error.message }); }
+});
+
 // ===== Crawl =====
 route("POST", "/api/crawl", async (req, res) => {
   try {
