@@ -152,6 +152,7 @@ export async function followAccount(input, options = {}) {
   // API 优先：使用 xhshow 签名获取用户笔记列表
   if (readApiCookie(rootDir)) {
     try {
+      const maxNotes = Math.min(options.maxNotes || 200, 500);
       let cursor = "";
       let apiResult;
       do {
@@ -163,11 +164,13 @@ export async function followAccount(input, options = {}) {
           if (!isFirstFollow && knownNoteIdSet.has(nid)) { seenNoteIds.add(nid); continue; }
           seenNoteIds.add(nid);
           allNotes.push({ ...note, accountId: input.accountId || null, brand: input.brand || "" });
+          if (allNotes.length >= maxNotes) break;
         }
         cursor = apiResult.cursor || "";
-      } while (cursor && allNotes.length < 50);
+      } while (cursor && allNotes.length < maxNotes);
       console.log(`[followAccount] API 获取到 ${allNotes.length} 条笔记`);
-      return { notes: allNotes, cursor: JSON.stringify(Array.from(knownNoteIdSet)), authorName, avatarUrl, totalFound: allNotes.length };
+      const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
+      return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allNotes.length };
     } catch (e) { console.warn("[followAccount] API 路径失败，降级:", e.message); }
   }
 

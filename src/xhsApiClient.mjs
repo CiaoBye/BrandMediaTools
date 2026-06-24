@@ -255,11 +255,18 @@ export async function fetchUserNotesViaApi(userId, cursor = "", rootDir = "") {
   const cookie = readApiCookie(rootDir || process.cwd());
   if (!cookie) return null;
   try {
-    const result = await fetchUserPosted(userId, cursor, 30, cookie);
-    if (!result.success) return null;
+    const result = await fetchUserPosted(userId, cursor, 50, cookie);
+    if (!result.success) {
+      console.warn(`[fetchUserNotesViaApi] API 返回失败:`, result.msg || result.code);
+      return null;
+    }
     const items = result.data?.items || [];
-    if (!items.length) return { notes: [], cursor: "" };
+    if (!items.length) {
+      console.log(`[fetchUserNotesViaApi] 无更多笔记 (cursor=${cursor})`);
+      return { notes: [], cursor: "" };
+    }
     const notes = apiItemsToNotes(result).notes;
+    console.log(`[fetchUserNotesViaApi] 获取 ${items.length} 条 (cursor=${cursor || "初始"} → ${result.data?.cursor?.slice(0, 20) || "无"})`);
     return { notes, cursor: result.data.cursor || "" };
   } catch (e) {
     console.warn("[fetchUserNotesViaApi] 失败:", e.message);
