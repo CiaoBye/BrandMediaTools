@@ -53,6 +53,8 @@ export async function saveXhsCookieFromBrowser(rootDir, options = {}) {
     const cookiePath = path.join(rootDir, "data", "xhs-cookie.txt");
     mkdirSync(path.dirname(cookiePath), { recursive: true });
     writeFileSync(cookiePath, cookieString, "utf8");
+    // 通知 API 客户端清缓存
+    try { (await import("../xhsApiClient.mjs")).clearCookieCache(); } catch {}
 
     return {
       ok: true, cookiePath, cookieCount: cookies.length,

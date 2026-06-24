@@ -1034,10 +1034,15 @@ $("#savePastedCookie")?.addEventListener("click", async () => {
   const name = $("#xhsAccountName").value.trim() || "账号-" + Date.now().toString(36);
   if (!cookie) return;
   try {
-    await api("/api/xhs-accounts", { method: "POST", body: JSON.stringify({ name, cookie }) });
+    // 同时保存到加密账号库 + 明文 Cookie 文件（供 xhshow API 使用）
+    await Promise.all([
+      api("/api/xhs-accounts", { method: "POST", body: JSON.stringify({ name, cookie }) }),
+      api("/api/settings/xhs-cookie", { method: "POST", body: JSON.stringify({ cookie }) }),
+    ]);
     $("#pasteCookieInput").value = "";
     document.getElementById("pasteCookieArea").style.display = "none";
     renderXhsAccounts();
+    alert("✅ Cookie 已保存，xhshow API 可使用");
   } catch (e) { alert("保存失败：" + e.message); }
 });
 

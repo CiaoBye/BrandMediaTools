@@ -21,6 +21,7 @@ export function readApiCookie(rootDir) {
   const filePath = path.join(rootDir, "data", "xhs-cookie.txt");
   if (existsSync(filePath)) {
     _cookieCache = readFileSync(filePath, "utf8").trim();
+    if (_cookieCache) console.log(`[xhsApi] 已加载 Cookie (${_cookieCache.split(";").length} 个字段)`);
   }
   return _cookieCache;
 }
