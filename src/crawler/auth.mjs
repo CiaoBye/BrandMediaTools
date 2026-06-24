@@ -22,7 +22,7 @@ export async function saveXhsCookieFromBrowser(rootDir, options = {}) {
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
   } catch {
     // 自动启动 CDP Chrome
-    const result = await launchCdpChrome(cdpPort);
+    const result = await launchCdpChrome(cdpPort, rootDir);
     browser = result.browser;
   }
 

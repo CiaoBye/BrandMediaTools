@@ -440,27 +440,38 @@ function killChrome() {
   try { execSync("taskkill /f /im chrome.exe >nul 2>&1", { stdio: "ignore" }); } catch {}
 }
 
-export async function launchCdpChrome(cdpPort) {
+export async function launchCdpChrome(cdpPort, rootDir) {
+  // 1. 强杀所有 Chrome
   killChrome();
-  for (let i = 0; i < 20; i++) {
-    try { execSync("tasklist /fi \"imagename eq chrome.exe\" /nh", { stdio: "pipe" }); } catch { break; }
-    await sleep(300);
+  for (let i = 0; i < 30; i++) {
+    try { execSync("tasklist /fi \"imagename eq chrome.exe\" /nh 2>nul", { stdio: "pipe" }); } catch { break; }
+    await sleep(200);
   }
-  const chromePath = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+
+  // 2. 启动带调试端口的 Chrome
+  const s = rootDir ? envWithSettings(rootDir) : { xhs: {} };
+  const chromePath = s.xhs.browserExecutable || findInstalledBrowser() || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
   const userDataDir = path.join(process.env.LOCALAPPDATA || "", "Google", "Chrome", "User Data");
-  spawn(chromePath, [
-    `--remote-debugging-port=${cdpPort}`, `--user-data-dir="${userDataDir}"`,
+  const args = [
+    `--remote-debugging-port=${cdpPort}`,
+    `--user-data-dir=${userDataDir}`,
     "--no-first-run", "--no-default-browser-check",
-  ], { detached: true, stdio: "ignore" });
+  ];
+  const proc = spawn(`"${chromePath}"`, args, { shell: true, detached: true, stdio: "ignore" });
+  proc.unref();
+
+  // 3. 等待端口就绪（最多 30 秒）
+  const { chromium } = await getPlaywright();
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
     try {
-      const browser = await (await getPlaywright()).chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+      const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
       const contexts = browser.contexts();
+      console.log(`[CDP] Chrome 已就绪 (${i + 1}s)`);
       return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
-    } catch { /* 继续等待 */ }
+    } catch { /* 等待中 */ }
   }
-  throw new Error(`Chrome CDP 自动启动失败。请手动结束所有 Chrome 进程后，以 --remote-debugging-port=${cdpPort} 重新启动。`);
+  throw new Error(`Chrome 自动启动失败（30s 超时）。请手动关闭所有 Chrome 后运行：\n  "${chromePath}" --remote-debugging-port=${cdpPort}`);
 }
 
 export async function createBrowser(rootDir, options = {}) {
@@ -479,7 +490,7 @@ export async function createBrowser(rootDir, options = {}) {
     } else {
       // 自动关闭已有 Chrome + 启动带 CDP 的 Chrome
       console.log("[CDP] 未检测到调试端口，尝试自动启动 CDP Chrome...");
-      const result = await launchCdpChrome(cdpPort);
+      const result = await launchCdpChrome(cdpPort, rootDir);
       browser = result.browser; context = result.context; isCdp = true;
     }
   } else {
