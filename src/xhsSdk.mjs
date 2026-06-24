@@ -436,7 +436,12 @@ async function connectOrLaunchCdp(rootDir, chromium, cdpPort) {
     const chromePath = settings.xhs.browserExecutable || findInstalledBrowser();
     if (!chromePath) throw new Error("未找到 Chrome 浏览器，请先安装 Chrome 或手动指定浏览器路径");
     console.log(`[CDP] 启动 Chrome (${chromePath}) --remote-debugging-port=${cdpPort}`);
-    const proc = spawn(chromePath, [`--remote-debugging-port=${cdpPort}`, "--no-first-run", "--no-default-browser-check"], {
+    const cdpDataDir = path.join(rootDir, "data", ".cdp-profile");
+    const proc = spawn(chromePath, [
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${cdpDataDir}`,
+      "--no-first-run", "--no-default-browser-check", "--no-sandbox"
+    ], {
       stdio: "ignore", detached: true
     });
     proc.unref();
