@@ -76,6 +76,9 @@ export class Logger {
 
 let _instance = null;
 export function getLogger(rootDir) {
-  if (!_instance) _instance = new Logger(rootDir);
+  if (!_instance && rootDir) _instance = new Logger(rootDir);
   return _instance;
 }
+
+/** 设置全局日志实例（供各个模块共用） */
+export function setGlobalLogger(instance) { _instance = instance; }

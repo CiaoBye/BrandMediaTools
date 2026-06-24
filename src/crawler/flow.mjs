@@ -1,23 +1,32 @@
 import { envWithSettings } from "../settings.mjs";
-import { isAccountUrl, openXhsContext, attachResponseCollector, sleep } from "../xhsSdk.mjs";
+import { isAccountUrl, openXhsContext, attachResponseCollector, sleep, log } from "../xhsSdk.mjs";
 import { fetchNoteViaHttp, extractNote, hasUsableAssets } from "./extract.mjs";
 import { extractAccountNotes } from "./account.mjs";
-import { crawlNoteViaApi, fetchUserNotesViaApi, readApiCookie } from "../xhsApiClient.mjs";
+import { crawlNoteViaApi, readApiCookie } from "../xhsApiClient.mjs";
 
 async function crawlWithFallback(input, options = {}) {
   const rootDir = options.rootDir || process.cwd();
+  const shortUrl = input.url?.slice(0, 80) || "";
+  log("info", `采集开始: ${shortUrl}`);
   if (!isAccountUrl(input.url)) {
     // 1. API 优先（需 Cookie）
     if (readApiCookie(rootDir)) {
       const noteId = input.url.match(/\/explore\/([a-zA-Z0-9]+)/)?.[1];
       if (noteId) {
         const apiResult = await crawlNoteViaApi(noteId, input.url, rootDir);
-        if (apiResult && apiResult.length > 0 && hasUsableAssets(apiResult[0])) return apiResult;
+        if (apiResult && apiResult.length > 0 && hasUsableAssets(apiResult[0])) {
+          log("info", `API 采集成功: ${apiResult[0].title?.slice(0, 40) || "未命名"}`);
+          return apiResult;
+        }
+        log("warn", `API 采集无结果，降级 HTTP SSR`);
       }
     }
     // 2. HTTP SSR 路径（免登录）
     const httpResult = await fetchNoteViaHttp(input, options);
-    if (httpResult && httpResult.length > 0 && hasUsableAssets(httpResult[0])) return httpResult;
+    if (httpResult && httpResult.length > 0 && hasUsableAssets(httpResult[0])) {
+      log("info", `HTTP SSR 采集成功: ${httpResult[0].title?.slice(0, 40) || "未命名"}`);
+      return httpResult;
+    }
   }
 
 

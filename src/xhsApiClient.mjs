@@ -5,9 +5,15 @@
 import { spawn, execSync } from "node:child_process";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { getLogger } from "./logger.mjs";
 
 let _pythonPath = "";
 let _cookieCache = "";
+
+function log(level, msg, data) {
+  try { const l = getLogger(); if (l) l[level](msg, data); } catch {}
+  if (level === "warn" || level === "error") console.warn("[xhsApi]", msg);
+}
 
 const SIGN_PORT = 9223;
 let _signServer = null;
@@ -66,7 +72,7 @@ export async function startSignServer(rootDir) {
   });
   _signServer.stderr.on("data", (d) => {
     const msg = d.toString().trim();
-    if (msg) console.log("[signserver]", msg);
+    if (msg) log("info", "[signserver] " + msg);
   });
   _signServer.on("exit", (code) => { _signServer = null; if (code) console.warn(`[signserver] exited ${code}`); });
   for (let i = 0; i < 20; i++) {
@@ -81,11 +87,13 @@ export async function startSignServer(rootDir) {
 
 export function stopSignServer() {
   if (_signServer) { try { _signServer.kill(); } catch {} _signServer = null; }
+  log("info", "signserver 已停止");
 }
 
 // ---- 签名与请求 ----
 
 async function signHeaders(uri, cookies, method = "get", params = {}, payload = {}, xRap = false) {
+  const start = Date.now();
   const body = { uri, cookies: extractCookies(cookies), method, params, payload, x_rap: xRap };
   const resp = await fetch(`http://127.0.0.1:${SIGN_PORT}`, {
     method: "POST",
@@ -94,19 +102,25 @@ async function signHeaders(uri, cookies, method = "get", params = {}, payload = 
   });
   const result = await resp.json();
   if (!result.ok) throw new Error(`签名失败: ${result.error}`);
+  log("info", `签名 ${uri.slice(0, 40)} (${Date.now() - start}ms)`);
   return result.headers;
 }
 
 export async function apiGet(apiPath, cookieStr, params = {}, xRap = false) {
+  const start = Date.now();
   const headers = await signHeaders(apiPath, cookieStr, "get", params, {}, xRap);
   const url = `${API_BASE}${apiPath}?${new URLSearchParams(params)}`;
   const resp = await fetch(url, {
     headers: { ...headers, Cookie: cookieStr, "Content-Type": "application/json" },
   });
+  const ms = Date.now() - start;
+  const ok = resp.ok ? "OK" : `${resp.status}`;
+  log("info", `GET ${apiPath.slice(0, 40)} ${ok} (${ms}ms)`);
   return resp.json();
 }
 
 export async function apiPost(apiPath, cookieStr, payload = {}, xRap = false) {
+  const start = Date.now();
   const headers = await signHeaders(apiPath, cookieStr, "post", {}, payload, xRap);
   const url = `${API_BASE}${apiPath}`;
   const resp = await fetch(url, {
@@ -114,6 +128,9 @@ export async function apiPost(apiPath, cookieStr, payload = {}, xRap = false) {
     headers: { ...headers, Cookie: cookieStr, "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
+  const ms = Date.now() - start;
+  const ok = resp.ok ? "OK" : `${resp.status}`;
+  log("info", `POST ${apiPath.slice(0, 40)} ${ok} (${ms}ms)`);
   return resp.json();
 }
 
@@ -257,19 +274,19 @@ export async function fetchUserNotesViaApi(userId, cursor = "", rootDir = "") {
   try {
     const result = await fetchUserPosted(userId, cursor, 50, cookie);
     if (!result.success) {
-      console.warn(`[fetchUserNotesViaApi] API 返回失败:`, result.msg || result.code);
+      log("warn", `用户笔记列表 API 失败: ${result.msg || result.code}`);
       return null;
     }
     const items = result.data?.items || [];
     if (!items.length) {
-      console.log(`[fetchUserNotesViaApi] 无更多笔记 (cursor=${cursor})`);
+      log("info", `用户笔记列表: 无更多笔记 (userId=${userId?.slice(0, 12)} cursor=${cursor?.slice(0, 16) || "初始"})`);
       return { notes: [], cursor: "" };
     }
     const notes = apiItemsToNotes(result).notes;
-    console.log(`[fetchUserNotesViaApi] 获取 ${items.length} 条 (cursor=${cursor || "初始"} → ${result.data?.cursor?.slice(0, 20) || "无"})`);
+    log("info", `用户笔记列表: ${items.length} 条 (userId=${userId?.slice(0, 12)} cursor=${cursor?.slice(0, 16) || "初始"} → ${result.data?.cursor?.slice(0, 16) || "终"})`);
     return { notes, cursor: result.data.cursor || "" };
   } catch (e) {
-    console.warn("[fetchUserNotesViaApi] 失败:", e.message);
+    log("warn", `用户笔记列表失败: ${e.message?.slice(0, 80)}`);
     return null;
   }
 }

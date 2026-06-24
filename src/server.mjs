@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { Storage } from "./storage.mjs";
 import { sendJson, sendText, readBody, serveFile, crawlAndStore, diagnose, getCached, setCached, clearCache, clearCacheByPrefix } from "./server-utils.mjs";
 import { crawlXhs, extractXhsUrls, extractPageLinks, isXhsNoteUrl, mergeXhsLinks, openXhsContext, saveXhsCookieFromBrowser, searchXhs, collectComments } from "./xhsCrawler.mjs";
-import { sleep, isAccountUrl } from "./xhsSdk.mjs";
+import { sleep, isAccountUrl, setCrawlerLogger } from "./xhsSdk.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
 import { analyzeNote } from "./aiAnalyzer.mjs";
 import { parseBool, loadSettings, clearSettingsCache, aiPresets, resolveAiConfig } from "./settings.mjs";
@@ -16,7 +16,7 @@ import { startQrLogin, checkQrLoginStatus, collectQrCookies, cancelQrLogin } fro
 import { encryptCookie, decryptCookie, readXhsCookie, resolveCookie, checkCookieValid } from "./xhsAuth.mjs";
 import { startScheduler, stopScheduler, runHealthCheckNow } from "./scheduler.mjs";
 import { fmtDate } from "./time.mjs";
-import { Logger } from "./logger.mjs";
+import { Logger, setGlobalLogger } from "./logger.mjs";
 import { sendWebhook } from "./webhook.mjs";
 import { startSignServer, stopSignServer } from "./xhsApiClient.mjs";
 import { exportForEagle } from "./eagleExporter.mjs";
@@ -26,6 +26,8 @@ const rootDir = path.resolve(__dirname, "..");
 const publicDir = path.join(rootDir, "public");
 const storage = new Storage(rootDir);
 const logger = new Logger(rootDir);
+setGlobalLogger(logger);
+setCrawlerLogger(logger);
 const port = Number(process.env.PORT || 4173);
 
 mkdirSync(path.join(rootDir, "data", "library"), { recursive: true });

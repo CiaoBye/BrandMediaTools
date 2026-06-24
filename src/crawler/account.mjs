@@ -3,7 +3,7 @@ import { readXhsCookie } from "../xhsAuth.mjs";
 import {
   extractXhsId, isXhsNoteUrl, normalizeXhsNoteUrl, scoreXhsNoteUrl,
   openXhsContext, attachResponseCollector,
-  sleep, randomDelay, parseInitState
+  sleep, randomDelay, parseInitState, log
 } from "../xhsSdk.mjs";
 import { fetchNoteViaHttp, extractNote } from "./extract.mjs";
 import { fetchUserNotesViaApi, readApiCookie } from "../xhsApiClient.mjs";
@@ -168,10 +168,10 @@ export async function followAccount(input, options = {}) {
         }
         cursor = apiResult.cursor || "";
       } while (cursor && allNotes.length < maxNotes);
-      console.log(`[followAccount] API 获取到 ${allNotes.length} 条笔记`);
+      log("info", `账号追踪 API: 获取 ${allNotes.length} 条 (userId=${userId?.slice(0, 12)}...)`);
       const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
       return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allNotes.length };
-    } catch (e) { console.warn("[followAccount] API 路径失败，降级:", e.message); }
+    } catch (e) { log("warn", `账号追踪 API 失败: ${e.message?.slice(0, 60)}`); }
   }
 
   let noteUrls = [];

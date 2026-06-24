@@ -7,6 +7,13 @@ import { envWithSettings } from "./settings.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// 全局日志（所有 crawler 模块共用）
+let _logger = null;
+export function setCrawlerLogger(l) { _logger = l; }
+export function log(level, msg, data) {
+  try { if (_logger) _logger[level]("[crawler] " + msg, data); } catch {}
+}
+
 export function normalizeUrl(value) {
   if (!value || typeof value !== "string") return "";
   return value
