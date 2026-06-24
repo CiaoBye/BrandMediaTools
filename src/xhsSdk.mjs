@@ -448,17 +448,12 @@ export async function launchCdpChrome(cdpPort, rootDir) {
     await sleep(200);
   }
 
-  // 2. 启动带调试端口的 Chrome（不用 shell，直接 spawn 避免引号问题）
+  // 2. 启动带调试端口的 Chrome
+  // 用 cmd /c start 启动（start 会自动处理路径引号，且不阻塞）
   const s = rootDir ? envWithSettings(rootDir) : { xhs: {} };
   const chromePath = s.xhs.browserExecutable || findInstalledBrowser() || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-  const localAppData = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || "C:\\Users\\Default", "AppData", "Local");
-  const userDataDir = path.join(localAppData, "Google", "Chrome", "User Data");
-  const proc = spawn(chromePath, [
-    `--remote-debugging-port=${cdpPort}`,
-    `--user-data-dir=${userDataDir}`,
-    "--no-first-run", "--no-default-browser-check",
-  ], { detached: true, stdio: "ignore" });
-  proc.unref();
+  const cmdLine = `cmd /c start "" "${chromePath}" --remote-debugging-port=${cdpPort} --no-first-run --no-default-browser-check`;
+  try { execSync(cmdLine, { stdio: "ignore", timeout: 5000 }); } catch {}
 
   // 3. 等待端口就绪（最多 30 秒）
   const { chromium } = await getPlaywright();
