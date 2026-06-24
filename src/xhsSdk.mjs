@@ -421,42 +421,41 @@ if (navigator.connection) {
 }
 `;
 
-// CDP 模式下自动启动的 Chrome 进程引用（用于关闭时清理）
-let _cdpChromeProcess = null;
-
-async function connectOrLaunchCdp(rootDir, chromium, cdpPort) {
-  // 先尝试连接已有 Chrome
+async function tryConnectCdp(chromium, cdpPort) {
+  // 尝试连接已有 Chrome（用户可能手动开启了 --remote-debugging-port）
   try {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
     const contexts = browser.contexts();
     return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
-  } catch {
-    // 连接失败，自动启动 Chrome
-    const settings = envWithSettings(rootDir);
-    const chromePath = settings.xhs.browserExecutable || findInstalledBrowser();
-    if (!chromePath) throw new Error("未找到 Chrome 浏览器，请先安装 Chrome 或手动指定浏览器路径");
-    console.log(`[CDP] 启动 Chrome (${chromePath}) --remote-debugging-port=${cdpPort}`);
-    const cdpDataDir = path.join(rootDir, "data", ".cdp-profile");
-    const proc = spawn(chromePath, [
-      `--remote-debugging-port=${cdpPort}`,
-      `--user-data-dir=${cdpDataDir}`,
-      "--no-first-run", "--no-default-browser-check", "--no-sandbox"
-    ], {
-      stdio: "ignore", detached: true
-    });
-    proc.unref();
-    _cdpChromeProcess = proc;
-    // 等待端口就绪（最多等 15 秒）
-    for (let i = 0; i < 30; i++) {
-      await sleep(500);
-      try {
-        const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
-        const contexts = browser.contexts();
-        return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
-      } catch { /* 继续等待 */ }
-    }
-    throw new Error(`Chrome 启动后无法连接 CDP 端口 ${cdpPort}，请手动启动 Chrome 并添加 --remote-debugging-port=${cdpPort}`);
-  }
+  } catch { return null; }
+}
+
+async function launchSystemChrome(chromium, options = {}) {
+  // 用 Playwright 启动系统 Chrome，共享真实用户数据目录和 Cookie
+  const launchOpts = { headless: false, channel: "chrome", args: [
+    "--disable-quic", "--no-first-run", "--no-default-browser-check",
+    "--disable-sync", "--disable-background-networking",
+    "--disable-blink-features=AutomationControlled",
+    "--window-size=1440,960"
+  ]};
+  const proxy = options.proxy || "";
+  if (proxy) launchOpts.proxy = { server: proxy };
+  const browser = await chromium.launch(launchOpts);
+  const viewports = [
+    { width: 1440, height: 900 }, { width: 1536, height: 864 },
+    { width: 1366, height: 768 }, { width: 1920, height: 1080 },
+    { width: 1280, height: 800 }
+  ];
+  const context = await browser.newContext({
+    viewport: viewports[Math.floor(Math.random() * viewports.length)],
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    locale: "zh-CN", timezoneId: "Asia/Shanghai",
+    permissions: ["geolocation"], deviceScaleFactor: 1,
+    colorScheme: "light"
+  });
+  // 注入隐形脚本（常规模式才需要，CDP 模式不注入）
+  await context.addInitScript({ content: STEALTH_SCRIPT });
+  return { browser, context, isCdp: false };
 }
 
 export async function createBrowser(rootDir, options = {}) {
@@ -469,19 +468,22 @@ export async function createBrowser(rootDir, options = {}) {
   let browser, context, isCdp = false;
 
   if (useCdp && cdpPort > 0) {
-    // CDP 模式：连接已有 Chrome，或自动启动一个（保留真实浏览器指纹）
-    const result = await connectOrLaunchCdp(rootDir, chromium, cdpPort);
-    browser = result.browser; context = result.context; isCdp = true;
+    // CDP 模式：优先连接已有 Chrome（用户可能已手动开启调试端口）
+    const cdpResult = await tryConnectCdp(chromium, cdpPort);
+    if (cdpResult) {
+      browser = cdpResult.browser; context = cdpResult.context; isCdp = true;
+    } else {
+      // CDP 连不上，用 Playwright 启动系统 Chrome（channel:chrome 共享真实用户数据）
+      const result = await launchSystemChrome(chromium, options);
+      browser = result.browser; context = result.context; isCdp = false;
+    }
   } else {
     // 常规模式：启动 Playwright 浏览器
     const launchOpts = {
       headless,
       args: [
-        "--disable-quic",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--disable-component-update",
-        "--disable-sync",
+        "--disable-quic", "--no-first-run", "--no-default-browser-check",
+        "--disable-component-update", "--disable-sync",
         "--disable-background-networking",
         "--disable-features=ChromeWhatsNewUI",
         "--disable-blink-features=AutomationControlled",
@@ -492,12 +494,8 @@ export async function createBrowser(rootDir, options = {}) {
     if (proxy) launchOpts.proxy = { server: proxy };
 
     const systemChrome = settings.xhs.browserExecutable || findInstalledBrowser();
-    if (systemChrome) {
-      launchOpts.executablePath = systemChrome;
-    } else {
-      const bundled = chromium.executablePath();
-      if (existsSync(bundled)) launchOpts.executablePath = bundled;
-    }
+    if (systemChrome) launchOpts.executablePath = systemChrome;
+    else { const b = chromium.executablePath(); if (existsSync(b)) launchOpts.executablePath = b; }
     browser = await chromium.launch(launchOpts);
 
     const viewports = [
@@ -505,16 +503,11 @@ export async function createBrowser(rootDir, options = {}) {
       { width: 1366, height: 768 }, { width: 1920, height: 1080 },
       { width: 1280, height: 800 }
     ];
-    const viewport = viewports[Math.floor(Math.random() * viewports.length)];
     context = await browser.newContext({
-      viewport,
+      viewport: viewports[Math.floor(Math.random() * viewports.length)],
       userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-      locale: "zh-CN",
-      timezoneId: "Asia/Shanghai",
-      permissions: ["geolocation"],
-      deviceScaleFactor: 1,
-      isMobile: false,
-      hasTouch: false,
+      locale: "zh-CN", timezoneId: "Asia/Shanghai",
+      permissions: ["geolocation"], deviceScaleFactor: 1,
       colorScheme: "light"
     });
     await context.addInitScript({ content: STEALTH_SCRIPT });
@@ -523,13 +516,8 @@ export async function createBrowser(rootDir, options = {}) {
   return { browser, context, isCdp };
 }
 
-// 清理自动启动的 Chrome 进程
-export function cleanupCdpChrome() {
-  if (_cdpChromeProcess) {
-    try { _cdpChromeProcess.kill(); } catch {}
-    _cdpChromeProcess = null;
-  }
-}
+// CDP 模式无需清理（连接已有 Chrome，不启动新进程）
+export function cleanupCdpChrome() {}
 
 export async function openXhsContext(rootDir, cookieOverride = "", optionOverrides = {}) {
   const { browser, context, isCdp } = await createBrowser(rootDir, optionOverrides);
