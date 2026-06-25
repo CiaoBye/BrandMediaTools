@@ -23,7 +23,7 @@ import { clearCookieCache } from "./xhsApiClient.mjs";
 import { exportForEagle } from "./eagleExporter.mjs";
 import { isOfficialXhsLogo } from "./crawler/account.mjs";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const __dirname = path.dirname(fileURLToPath(import.meta.url || 'file://' + (process.cwd().replace(/\\/g, '/')) + '/'));
 const rootDir = path.resolve(__dirname, "..");
 const publicDir = path.join(rootDir, "public");
 const storage = new Storage(rootDir);

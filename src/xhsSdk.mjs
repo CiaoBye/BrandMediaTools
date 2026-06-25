@@ -334,7 +334,7 @@ export function findInstalledBrowser() {
 }
 
 export async function getPlaywright() {
-  const localRequire = createRequire(import.meta.url);
+  const localRequire = createRequire(import.meta.url || __filename || process.cwd() + '/');
   try { return localRequire("playwright"); } catch (error) {
     const runtimeNodeModules = path.resolve(path.dirname(process.execPath), "..", "node_modules");
     const pnpmDir = path.join(runtimeNodeModules, ".pnpm");
