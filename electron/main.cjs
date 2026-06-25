@@ -1,15 +1,34 @@
 const { app, BrowserWindow } = require("electron");
-const { fork } = require("child_process");
+const { fork, execSync } = require("child_process");
 const path = require("path");
+const fs = require("fs");
 
 let mainWindow;
 let serverProcess;
 
 const PORT = 4173;
 const SERVER_SCRIPT = path.join(__dirname, "..", "src", "server.mjs");
+const PLAYWRIGHT_DIR = path.join(__dirname, "..", "node_modules", "playwright");
+
+function ensurePlaywrightBrowsers() {
+  const browsersJson = path.join(PLAYWRIGHT_DIR, "browsers.json");
+  if (!fs.existsSync(browsersJson)) {
+    console.log("Playwright 未安装，尝试安装浏览器...");
+    try {
+      execSync("npx playwright install chromium", {
+        cwd: path.join(__dirname, ".."),
+        stdio: "inherit",
+        timeout: 120000,
+      });
+      console.log("Playwright 浏览器安装完成");
+    } catch (e) {
+      console.error("Playwright 浏览器安装失败:", e.message);
+    }
+  }
+}
 
 function startServer() {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     serverProcess = fork("node", ["--no-warnings", SERVER_SCRIPT], {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, PORT: String(PORT) },
@@ -31,7 +50,6 @@ function startServer() {
       console.log(`服务器退出 (code=${code})`);
     });
 
-    // 超时保护
     setTimeout(() => resolve(), 15000);
   });
 }
@@ -52,9 +70,11 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  console.log("初始化...");
+  ensurePlaywrightBrowsers();
   console.log("正在启动服务器...");
   await startServer();
-  console.log("服务器已就绪，打开窗口...");
+  console.log("服务器已就绪");
   createWindow();
 });
 
