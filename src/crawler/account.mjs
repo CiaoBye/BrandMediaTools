@@ -6,7 +6,6 @@ import {
   sleep, randomDelay, parseInitState, log
 } from "../xhsSdk.mjs";
 import { fetchNoteViaHttp, extractNote } from "./extract.mjs";
-import { fetchUserNotesViaApi, readApiCookie } from "../xhsApiClient.mjs";
 
 export function isOfficialXhsLogo(url) {
   if (!url) return false;
@@ -171,14 +170,6 @@ export async function followAccount(input, options = {}) {
   if (!userId && authorUrl) userId = extractXhsId(authorUrl);
   if (!userId) throw new Error("需要提供 userId 或账号主页链接");
 
-  const useCookie = options.cookie || input.cookie || "";
-  if (useCookie) {
-    try {
-      const { setApiCookie } = await import("../xhsApiClient.mjs");
-      setApiCookie(useCookie);
-    } catch {}
-  }
-
   const knownNoteIds = Array.isArray(input.knownNoteIds) ? input.knownNoteIds : [];
   const knownNoteIdSet = new Set(knownNoteIds.filter(Boolean));
   const isFirstFollow = knownNoteIds.length === 0;
@@ -186,43 +177,6 @@ export async function followAccount(input, options = {}) {
   const seenNoteIds = new Set();
   let authorName = input.authorName || "";
   let avatarUrl = "";
-
-  // API 优先：使用 xhshow 签名获取用户笔记列表
-  if (readApiCookie(rootDir)) {
-    try {
-      const maxNotes = Math.min(options.maxNotes || 200, 500);
-      let cursor = "";
-      let apiResult;
-      do {
-        apiResult = await fetchUserNotesViaApi(userId, cursor, rootDir);
-        if (!apiResult || !apiResult.notes || !apiResult.notes.length) break;
-
-        if (apiResult.notes.length > 0) {
-          const firstNote = apiResult.notes[0];
-          if (!authorName && firstNote.authorName) authorName = firstNote.authorName;
-          if (!avatarUrl && firstNote.authorAvatar) avatarUrl = firstNote.authorAvatar;
-        }
-
-        for (const note of apiResult.notes) {
-          const nid = note.noteId || "";
-          if (!nid || seenNoteIds.has(nid)) continue;
-          if (!isFirstFollow && knownNoteIdSet.has(nid)) { seenNoteIds.add(nid); continue; }
-          seenNoteIds.add(nid);
-          allNotes.push({ ...note, accountId: input.accountId || null, brand: input.brand || "" });
-          if (allNotes.length >= maxNotes) break;
-        }
-        cursor = apiResult.cursor || "";
-      } while (cursor && allNotes.length < maxNotes);
-
-      if (allNotes.length > 0) {
-        log("info", `账号追踪 API: 获取 ${allNotes.length} 条 (userId=${userId?.slice(0, 12)}...)`);
-        const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
-        return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allKnownIds.size };
-      }
-      log("warn", "账号追踪 API 未能获取任何笔记，降级 HTTP 路径");
-    } catch (e) { log("warn", `账号追踪 API 失败: ${e.message?.slice(0, 60)}`); }
-  }
-
   let noteUrls = [];
   let httpRiskError = null;
   const httpProfile = await fetchAccountNotesViaHttp(userId, { ...options, rootDir }).catch((e) => {

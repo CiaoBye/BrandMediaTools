@@ -1346,22 +1346,21 @@ $("#extractCookieBtn")?.addEventListener("click", async () => {
 
 $("#testApiBtn")?.addEventListener("click", async () => {
   const btn = $("#testApiBtn");
-  btn.disabled = true; btn.textContent = "测试中…";
+  btn.disabled = true; btn.textContent = "检测中…";
   try {
-    const r = await api("/api/xhs/test-api", { method: "POST" });
-    if (r.ok) {
-      showToast(`API 测试通过 ✅ 签名正常`, "success");
+    const r = await api("/api/xhs/test-cookie", { method: "POST" });
+    if (r.diagnostics?.hasA1 && r.diagnostics?.hasWebSession) {
+      showToast(`Cookie 有效：${r.diagnostics.cookieFields} 个字段`, "success");
     } else {
       const diag = r.diagnostics || {};
       const reasons = [];
-      if (!diag.hasA1) reasons.push("❌ 无 a1 Cookie");
-      if (diag.hasA1 && !r.signServerRunning) reasons.push("❌ 签名服务未启动");
-      if (r.apiError) reasons.push(`❌ ${r.apiError}`);
-      if (r.apiResult?.code) reasons.push(`API 返回 code=${r.apiResult.code}`);
-      showToast(`API 状态：${reasons.join("；") || "未知错误"}`, "warn");
+      if (!diag.hasCookie) reasons.push("❌ 无 Cookie 文件");
+      if (!diag.hasA1) reasons.push("❌ 缺 a1");
+      if (!diag.hasWebSession) reasons.push("❌ 缺 web_session");
+      showToast(`Cookie 异常：${reasons.join("；")}`, "warn");
     }
-  } catch (e) { showToast(`请求失败: ${e.message}`, "error"); }
-  finally { btn.disabled = false; btn.textContent = "测试 API"; }
+  } catch (e) { showToast(`检测失败: ${e.message}`, "error"); }
+  finally { btn.disabled = false; btn.textContent = "检测 Cookie"; }
 });
 
 $("#savePastedCookie")?.addEventListener("click", async () => {

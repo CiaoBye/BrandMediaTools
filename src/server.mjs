@@ -19,7 +19,7 @@ import { startScheduler, stopScheduler, runHealthCheckNow } from "./scheduler.mj
 import { fmtDate } from "./time.mjs";
 import { Logger, setGlobalLogger } from "./logger.mjs";
 import { sendWebhook } from "./webhook.mjs";
-import { startSignServer, stopSignServer } from "./xhsApiClient.mjs";
+import { clearCookieCache } from "./xhsApiClient.mjs";
 import { exportForEagle } from "./eagleExporter.mjs";
 import { isOfficialXhsLogo } from "./crawler/account.mjs";
 
@@ -749,10 +749,7 @@ route("POST", "/api/settings/xhs-cookie", async (req, res) => {
   const cookie = cleanCookieString(rawCookie);
   if (!cookie || !cookie.includes("=")) { sendJson(res, 400, { error: "请粘贴有效的小红书 Cookie" }); return; }
   writeFileSync(path.join(rootDir, "data", "xhs-cookie.txt"), cookie, "utf8");
-  try {
-    const { clearCookieCache } = await import("./xhsApiClient.mjs");
-    clearCookieCache();
-  } catch {}
+  try { clearCookieCache(); } catch {}
   sendJson(res, 200, { ok: true, message: "小红书 Cookie 已保存" });
 });
 route("POST", "/api/settings/xhs-cookie/from-browser", async (req, res) => {
@@ -764,10 +761,10 @@ route("POST", "/api/settings/xhs-cookie/from-browser", async (req, res) => {
 });
 
 // ===== xhs API (pure HTTP, no browser) =====
-route("POST", "/api/xhs/test-api", async (req, res) => {
+route("POST", "/api/xhs/test-cookie", async (req, res) => {
   try {
     const cookieRaw = await (await import("./xhsAuth.mjs")).readXhsCookie(rootDir);
-    const diagnostics = { hasCookie: false, cookieFields: 0, hasA1: false, hasWebSession: false, signServerRunning: false };
+    const diagnostics = { hasCookie: false, cookieFields: 0, hasA1: false, hasWebSession: false };
 
     if (cookieRaw) {
       diagnostics.hasCookie = true;
@@ -776,23 +773,19 @@ route("POST", "/api/xhs/test-api", async (req, res) => {
       diagnostics.hasWebSession = cookieRaw.includes("web_session=");
     }
 
-    const { startSignServer } = await import("./xhsApiClient.mjs");
-    try { await startSignServer(rootDir); diagnostics.signServerRunning = true; } catch {}
-
-    if (!diagnostics.hasA1) {
-      sendJson(res, 200, { ok: false, diagnostics, error: "Cookie 缺少 a1 字段" });
-      return;
+    // 用 Cookie 测试请求小红书首页（验证 Cookie 是否有效）
+    let cookieValid = false;
+    if (diagnostics.hasA1) {
+      try {
+        const r = await fetch("https://www.xiaohongshu.com/explore", {
+          headers: { Cookie: cookieRaw, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+          redirect: "manual",
+        });
+        cookieValid = r.status === 200;
+      } catch {}
     }
 
-    let apiResult = null;
-    let apiError = null;
-    try {
-      const { fetchUserInfo } = await import("./xhsApiClient.mjs");
-      const result = await fetchUserInfo("", cookieRaw);
-      apiResult = { success: result.success, msg: result.msg, code: result.code };
-    } catch (e) { apiError = e.message; }
-
-    sendJson(res, 200, { ok: apiResult?.success === true, diagnostics, apiResult, apiError });
+    sendJson(res, 200, { ok: cookieValid, diagnostics, note: "xhsow API 线路已停用，采集走 SSR + Playwright。Cookie 仅用于 Playwright 登录态" });
   } catch (error) { sendJson(res, 500, { error: error.message }); }
 });
 
@@ -961,9 +954,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 startScheduler(rootDir, storage);
-startSignServer(rootDir).catch((e) => console.warn("[signserver] 启动失败:", e.message));
 async function cleanupOnExit() {
-  stopSignServer();
   try { const m = await import('./xhsSdk.mjs'); if (m.cleanupCdpChrome) m.cleanupCdpChrome(); } catch {}
   stopScheduler();
 }

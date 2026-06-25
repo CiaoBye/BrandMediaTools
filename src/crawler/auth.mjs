@@ -46,13 +46,14 @@ export async function saveXhsCookieFromBrowser(rootDir, options = {}) {
   let isLoggedIn = false;
   let cookieString = "";
 
-  // 检查现有 Cookie 是否有效
+  // 检查现有 Cookie 是否有效（访问首页看是否 200）
   if (existingCookie && existingCookie.includes("a1=") && existingCookie.includes("web_session=")) {
     try {
-      const r = await fetch("https://edith.xiaohongshu.com/api/sns/web/v1/user/selfinfo", {
-        headers: { Cookie: existingCookie },
+      const r = await fetch("https://www.xiaohongshu.com/explore", {
+        headers: { Cookie: existingCookie, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
+        redirect: "manual",
       });
-      if (r.ok) {
+      if (r.status === 200) {
         isLoggedIn = true;
         cookieString = existingCookie;
       }
