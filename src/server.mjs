@@ -24,8 +24,8 @@ import { exportForEagle } from "./eagleExporter.mjs";
 import { isOfficialXhsLogo } from "./crawler/account.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url || 'file://' + (process.cwd().replace(/\\/g, '/')) + '/'));
-const rootDir = path.resolve(__dirname, "..");
-const publicDir = path.join(rootDir, "public");
+const rootDir = process.env.APP_DATA_DIR || path.resolve(__dirname, "..");
+const publicDir = process.env.APP_PUBLIC_DIR || path.join(rootDir, "public");
 const storage = new Storage(rootDir);
 const logger = new Logger(rootDir);
 setGlobalLogger(logger);

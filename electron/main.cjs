@@ -1,17 +1,13 @@
-const { app, BrowserWindow } = require("electron");
-const { fork } = require("child_process");
+const { app, BrowserWindow, dialog } = require("electron");
 const path = require("path");
 const fs = require("fs");
+const { pathToFileURL } = require("url");
 
 let mainWindow;
-let serverProcess;
 
 const PORT = 4173;
-const SERVER_SCRIPT = path.join(__dirname, "..", "src", "server.mjs");
 
 function getBrowsersPath() {
-  // 打包后: resources/chromium-1223/
-  // 开发时: .browser-cache/chromium-1223/
   const packed = path.join(process.resourcesPath, "chromium-1223");
   if (fs.existsSync(packed)) return packed;
   const dev = path.join(__dirname, "..", ".browser-cache", "chromium-1223");
@@ -19,38 +15,39 @@ function getBrowsersPath() {
   return "";
 }
 
-function startServer() {
-  return new Promise((resolve) => {
-    const browserPath = getBrowsersPath();
-    const env = { ...process.env, PORT: String(PORT) };
-    if (browserPath) {
-      env.PLAYWRIGHT_BROWSERS_PATH = browserPath;
-      console.log("[electron] Playwright 浏览器路径:", browserPath);
-    }
+async function startServer() {
+  const browserPath = getBrowsersPath();
+  if (browserPath) {
+    process.env.PLAYWRIGHT_BROWSERS_PATH = browserPath;
+    console.log("[electron] Playwright 浏览器路径:", browserPath);
+  }
+  process.env.PORT = String(PORT);
 
-    serverProcess = fork("node", ["--no-warnings", SERVER_SCRIPT], {
-      stdio: ["ignore", "pipe", "pipe"],
-      env,
-    });
+  // 设置数据目录为可写位置（避免 asar 只读）
+  const userDataPath = app.getPath("userData");
+  process.env.APP_DATA_DIR = userDataPath;
+  console.log("[electron] 数据目录:", userDataPath);
 
-    serverProcess.stdout.on("data", (data) => {
-      const msg = data.toString();
-      console.log("[server]", msg.trim());
-      if (msg.includes("启动") || msg.includes("started") || msg.includes(PORT)) {
-        setTimeout(resolve, 1000);
-      }
-    });
+  // 确保 data/ 目录存在
+  const dataDir = path.join(userDataPath, "data");
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-    serverProcess.stderr.on("data", (data) => {
-      console.error("[server]", data.toString().trim());
-    });
+  // 设置 public 目录路径（打包后 from asar.unpacked，开发时 from 源码）
+  const publicDev = path.join(__dirname, "..", "public");
+  const publicPacked = path.join(process.resourcesPath, "app.asar.unpacked", "public");
+  process.env.APP_PUBLIC_DIR = fs.existsSync(publicPacked) ? publicPacked : publicDev;
+  console.log("[electron] public 目录:", process.env.APP_PUBLIC_DIR);
 
-    serverProcess.on("exit", (code) => {
-      console.log(`服务器退出 (code=${code})`);
-    });
-
-    setTimeout(() => resolve(), 15000);
-  });
+  // 启动服务器
+  const serverPath = path.join(__dirname, "..", "src", "server.mjs");
+  const serverUrl = pathToFileURL(serverPath).href;
+  try {
+    await import(serverUrl);
+    console.log("[electron] 服务器已启动");
+  } catch (e) {
+    console.error("[electron] 服务器启动失败:", e.message);
+    throw e;
+  }
 }
 
 function createWindow() {
@@ -70,14 +67,17 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   console.log("初始化...");
-  console.log("正在启动服务器...");
-  await startServer();
-  console.log("服务器已就绪");
-  createWindow();
+  try {
+    await startServer();
+    console.log("服务器已就绪");
+    createWindow();
+  } catch (e) {
+    console.error("启动失败:", e);
+    dialog.showErrorBox("启动失败", `服务器无法启动:\n${e.message}\n\n请确认没有被防火墙拦截。`);
+  }
 });
 
 app.on("window-all-closed", () => {
-  if (serverProcess) serverProcess.kill();
   if (process.platform !== "darwin") app.quit();
 });
 
