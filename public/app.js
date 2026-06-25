@@ -1,11 +1,118 @@
+// ===== Toast & Confirm Modal System =====
+(function initFeedbackSystem() {
+  const toastContainer = document.createElement("div");
+  toastContainer.id = "toastContainer";
+  toastContainer.style.cssText = "position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column-reverse;gap:8px;pointer-events:none";
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", () => document.body.appendChild(toastContainer));
+  } else {
+    document.body.appendChild(toastContainer);
+  }
+
+  window.showToast = function(message, type, duration) {
+    type = type || "success"; duration = duration || 3000;
+    const palette = { success: "#22c55e", error: "#ef4444", warning: "#f59e0b", info: "#3b82f6" };
+    const el = document.createElement("div");
+    el.textContent = message;
+    el.style.cssText = "background:" + (palette[type] || palette.info) + ";color:#fff;padding:10px 18px;" +
+      "border-radius:8px;font-size:13px;max-width:340px;pointer-events:auto;cursor:pointer;" +
+      "box-shadow:0 4px 20px rgba(0,0,0,.25);transform:translateX(120%);" +
+      "transition:transform .25s cubic-bezier(.34,1.56,.64,1);word-break:break-word";
+    toastContainer.appendChild(el);
+    requestAnimationFrame(function() { el.style.transform = "translateX(0)"; });
+    var tid = setTimeout(dismiss, duration);
+    el.addEventListener("click", dismiss);
+    function dismiss() {
+      clearTimeout(tid);
+      el.style.transform = "translateX(140%)";
+      setTimeout(function() { if (el.parentNode) el.parentNode.removeChild(el); }, 280);
+    }
+  };
+
+  window.showConfirm = function(message, opts) {
+    opts = opts || {};
+    var danger = opts.danger || false;
+    var title = opts.title || "\u786e\u8ba4\u64cd\u4f5c";
+    var _esc = function(v) { return String(v || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); };
+    return new Promise(function(resolve) {
+      var overlay = document.createElement("div");
+      overlay.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:10000;display:grid;place-items:center";
+      overlay.innerHTML = '<div style="background:var(--surface-solid,#0f172a);border-radius:12px;padding:24px 28px;max-width:400px;width:90%;box-shadow:0 20px 60px rgba(0,0,0,.3);border:1px solid var(--line)">'
+        + '<h3 style="margin:0 0 12px;font-size:16px;font-weight:600;color:var(--text)">' + _esc(title) + '</h3>'
+        + '<p style="margin:0 0 20px;font-size:14px;line-height:1.6;color:var(--text-secondary,#9ca3af)">' + _esc(message) + '</p>'
+        + '<div style="display:flex;gap:8px;justify-content:flex-end">'
+        + '<button id="_cc" style="padding:8px 18px;border-radius:8px;border:1px solid var(--line,rgba(255,255,255,0.08));background:transparent;cursor:pointer;color:inherit;font-size:14px">\u53d6\u6d88</button>'
+        + '<button id="_co" style="padding:8px 18px;border-radius:8px;border:none;background:' + (danger ? '#ef4444' : 'var(--primary,#7c3aed)') + ';color:#fff;cursor:pointer;font-size:14px;font-weight:500">' + (danger ? '\u786e\u8ba4\u5220\u9664' : '\u786e\u8ba4') + '</button>'
+        + '</div></div>';
+      document.body.appendChild(overlay);
+      overlay.querySelector("#_co").addEventListener("click", function() { overlay.remove(); resolve(true); });
+      overlay.querySelector("#_cc").addEventListener("click", function() { overlay.remove(); resolve(false); });
+      overlay.addEventListener("click", function(e) { if (e.target === overlay) { overlay.remove(); resolve(false); } });
+    });
+  };
+})();
+
+// ===== 移动端汉堡菜单 =====
+document.addEventListener("DOMContentLoaded", function() {
+  var sidebar = document.querySelector(".sidebar");
+  if (!sidebar) return;
+  var hamburger = document.createElement("button");
+  hamburger.className = "hamburger-btn";
+  hamburger.innerHTML = "\u2630";
+  hamburger.setAttribute("aria-label", "\u6253\u5f00\u83dc\u5355");
+  document.body.appendChild(hamburger);
+  var mobileOverlay = document.createElement("div");
+  mobileOverlay.className = "sidebar-overlay";
+  document.body.appendChild(mobileOverlay);
+  function openSidebar() { sidebar.classList.add("mobile-open"); mobileOverlay.classList.add("active"); hamburger.innerHTML = "\u2715"; }
+  function closeSidebar() { sidebar.classList.remove("mobile-open"); mobileOverlay.classList.remove("active"); hamburger.innerHTML = "\u2630"; }
+  hamburger.addEventListener("click", function() {
+    if (sidebar.classList.contains("mobile-open")) closeSidebar(); else openSidebar();
+  });
+  mobileOverlay.addEventListener("click", closeSidebar);
+  sidebar.querySelectorAll("#sidebarNav a").forEach(function(a) {
+    a.addEventListener("click", function() {
+      if (window.innerWidth <= 768) closeSidebar();
+    });
+  });
+});
+
+// Configure Chart.js global defaults for deep dark theme compatibility
+if (typeof Chart !== "undefined") {
+  Chart.defaults.color = "#94a3b8"; // Ticks & Legend font color
+  Chart.defaults.borderColor = "rgba(255, 255, 255, 0.08)"; // Grid lines border
+  if (Chart.defaults.scale && Chart.defaults.scale.grid) {
+    Chart.defaults.scale.grid.color = "rgba(255, 255, 255, 0.06)";
+  }
+}
+
 const state = { accounts: [], notes: [], stats: null, xhsAccounts: [], scheduledTasks: [], selectedIds: new Set(), viewMode: "card", followedAccounts: [], activeLibTab: "", selectMode: false, renderLimit: 30, renderStep: 30, _observer: null };
+
+/** 生成统一风格的空状态 HTML */
+function renderEmptyState(icon, title, hint) {
+  return `<div class="empty-state"><div class="icon">${icon}</div><p>${esc(title)}</p>${hint ? `<p class="muted" style="font-size:12px;margin-top:4px">${esc(hint)}</p>` : ""}</div>`;
+}
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, { ...opts, headers: { "Content-Type": "application/json", ...(opts.headers || {}) } });
+  const token = document.querySelector('meta[name="app-token"]')?.getAttribute('content') || window.__APP_TOKEN__ || "";
+  const r = await fetch(path, {
+    ...opts,
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { "x-app-token": token } : {}),
+      ...(opts.headers || {})
+    }
+  });
   const d = await r.json();
-  if (!r.ok) throw new Error(d.error || "请求失败");
+  if (!r.ok) {
+    if (d.error && (d.error.includes("App Token") || d.error.includes("Forbidden"))) {
+      showToast("安全凭证已失效，系统将在 2 秒内刷新页面重试...", "warning", 3000);
+      setTimeout(() => location.reload(), 2000);
+    }
+    throw new Error(d.error || "请求失败");
+  }
   return d;
 }
 
@@ -36,27 +143,120 @@ function tagColor(kind) {
 
 // ===== Sidebar =====
 $$("#sidebarNav a").forEach((a) => {
+  if (a.id === "themeToggleBtn") return;
   a.addEventListener("click", () => {
-    $$("#sidebarNav a").forEach((x) => x.classList.remove("active"));
+    $$("#sidebarNav a").forEach((x) => { if (x.id !== "themeToggleBtn") x.classList.remove("active"); });
     a.classList.add("active");
     $$(".page").forEach((p) => p.classList.remove("active"));
-    $(`#${a.dataset.page}`).classList.add("active");
-    if (a.dataset.page === "page-dashboard") renderDashboard();
-    if (a.dataset.page === "page-content-analysis") renderContentAnalysis();
-    if (a.dataset.page === "page-reports") renderReports();
-    if (a.dataset.page === "page-xhs-accounts") { renderXhsAccounts(); renderScheduledTasks(); }
-    if (a.dataset.page === "page-accounts") renderAccounts();
-    if (a.dataset.page === "page-logs") renderLogs();
+    
+    const pageId = a.dataset.page;
+    const targetPage = $(`#${pageId}`);
+    if (targetPage) {
+      targetPage.classList.add("active");
+      
+      // 激活该大 Tab 下处于 active 的子 Tab，或者默认第一个
+      const activeSubTab = targetPage.querySelector(".sub-tab.active") || targetPage.querySelector(".sub-tab");
+      if (activeSubTab) {
+        activeSubTab.click();
+      }
+    }
+  });
+});
+
+// ===== 二级子 Tab 导航切换逻辑 =====
+$$(".sub-tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    const pageContainer = tab.closest(".page");
+    if (!pageContainer) return;
+    
+    pageContainer.querySelectorAll(".sub-tab").forEach((x) => x.classList.remove("active"));
+    tab.classList.add("active");
+    
+    pageContainer.querySelectorAll(".sub-page").forEach((p) => p.classList.remove("active"));
+    const targetSubPageId = tab.dataset.subPage;
+    const targetSubPage = document.getElementById(targetSubPageId);
+    if (targetSubPage) {
+      targetSubPage.classList.add("active");
+    }
+    
+    // 子页面重绘/渲染触发
+    if (targetSubPageId === "sub-page-mon-accounts") {
+      renderAccounts();
+    } else if (targetSubPageId === "sub-page-mon-auth") {
+      renderXhsAccounts();
+      renderScheduledTasks();
+    } else if (targetSubPageId === "sub-page-mon-logs") {
+      renderLogs();
+    } else if (targetSubPageId === "sub-page-lib-assets") {
+      renderNotes();
+    } else if (targetSubPageId === "sub-page-lib-analysis") {
+      renderContentAnalysis();
+    } else if (targetSubPageId === "sub-page-ins-dashboard") {
+      renderDashboard();
+    } else if (targetSubPageId === "sub-page-ins-reports") {
+      renderReports();
+    }
   });
 });
 
 $("#sidebarSettings")?.addEventListener("click", openSettings);
 
+// ===== Theme Toggle System =====
+function applyTheme(isLight) {
+  if (isLight) {
+    document.body.classList.add("theme-light");
+    const iconEl = $("#themeToggleIcon");
+    if (iconEl) iconEl.textContent = "🌙";
+    const btnEl = $("#themeToggleBtn");
+    if (btnEl) btnEl.title = "切换主题：深色";
+    if (typeof Chart !== "undefined") {
+      Chart.defaults.color = "#475569"; // 浅色背景下使用深蓝灰文字
+      Chart.defaults.borderColor = "rgba(0, 0, 0, 0.08)";
+      if (Chart.defaults.scale && Chart.defaults.scale.grid) {
+        Chart.defaults.scale.grid.color = "rgba(0, 0, 0, 0.05)";
+      }
+    }
+  } else {
+    document.body.classList.remove("theme-light");
+    const iconEl = $("#themeToggleIcon");
+    if (iconEl) iconEl.textContent = "☀️";
+    const btnEl = $("#themeToggleBtn");
+    if (btnEl) btnEl.title = "切换主题：明亮";
+    if (typeof Chart !== "undefined") {
+      Chart.defaults.color = "#94a3b8"; // 深色背景下使用浅灰文字
+      Chart.defaults.borderColor = "rgba(255, 255, 255, 0.08)";
+      if (Chart.defaults.scale && Chart.defaults.scale.grid) {
+        Chart.defaults.scale.grid.color = "rgba(255, 255, 255, 0.06)";
+      }
+    }
+  }
+}
+
+// 初始化主题
+(function initTheme() {
+  const isLight = localStorage.getItem("theme") === "light";
+  applyTheme(isLight);
+
+  $("#themeToggleBtn")?.addEventListener("click", () => {
+    const nextLight = !document.body.classList.contains("theme-light");
+    applyTheme(nextLight);
+    localStorage.setItem("theme", nextLight ? "light" : "dark");
+    
+    // 若当前正在看数据图表面板，立即重绘
+    const activeSubTabId = $(".sub-tab.active")?.dataset.subPage;
+    if (activeSubTabId === "sub-page-ins-dashboard") {
+      renderDashboard();
+    } else if (activeSubTabId === "sub-page-lib-analysis") {
+      renderContentAnalysis();
+    }
+  });
+})();
+
 // ===== Accounts (merged with Follow) =====
 function renderAccounts() {
   const list = $("#accountsList");
   if (!state.accounts.length) {
-    list.innerHTML = '<div class="empty-state"><div class="icon">👥</div><p>还没有竞品账号，点击"添加账号"开始</p></div>';
+    list.innerHTML = renderEmptyState("👥", "还没有竞品账号", "点击“添加账号”开始追踪竞品");
     return;
   }
   const followed = state.followedAccounts || [];
@@ -111,7 +311,7 @@ function bindAccountEvents() {
           await api(`/api/accounts/${id}/follow`, { method: "POST" });
         }
         await refresh();
-      } catch (e) { alert("操作失败：" + e.message); btn.disabled = false; }
+      } catch (e) { showToast("操作失败：" + e.message, "error"); btn.disabled = false; }
     });
   });
   // Instant crawl
@@ -150,12 +350,12 @@ function bindAccountEvents() {
   document.querySelectorAll("[data-account-delete]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const id = btn.dataset.accountDelete;
-      if (!confirm("确认删除此账号？关联笔记不会删除。")) return;
+      if (!await showConfirm("确认删除此账号？关联笔记不会删除。", { danger: true, title: "确认删除" })) return;
       btn.disabled = true;
       try {
         await api(`/api/accounts/${id}`, { method: "DELETE" });
         await refresh();
-      } catch (e) { alert("删除失败：" + e.message); btn.disabled = false; }
+      } catch (e) { showToast("删除失败：" + e.message, "error"); btn.disabled = false; }
     });
   });
 }
@@ -197,7 +397,9 @@ function showEditAccountModal(account) {
       const r = await api("/api/accounts/detect-name", { method: "POST", body: JSON.stringify({ url }) });
       if (r.name) document.getElementById("editName").value = r.name;
       if (r.avatarUrl) document.getElementById("editUrl").dataset.avatarUrl = r.avatarUrl;
-    } catch {}
+    } catch (e) {
+      showToast(e.message || "账号识别失败，请检查登录 Cookie", "error");
+    }
   });
   document.getElementById("saveEditAccountBtn").addEventListener("click", async () => {
     const data = {
@@ -208,7 +410,7 @@ function showEditAccountModal(account) {
       industry: document.getElementById("editIndustry").value.trim(),
       priority: document.getElementById("editPriority").value
     };
-    if (!data.brand) { alert("请填写品牌名称"); return; }
+    if (!data.brand) { showToast("请填写品牌名称", "warning"); return; }
     try {
       await api(`/api/accounts/${account.id}`, { method: "PUT", body: JSON.stringify(data) });
       overlay.remove();
@@ -219,16 +421,30 @@ function showEditAccountModal(account) {
         await api(`/api/accounts/${account.id}/follow`, { method: "POST", body: JSON.stringify({ avatarUrl }) }).catch(() => {});
       }
       await refresh();
-    } catch (e) { alert("保存失败：" + e.message); }
+    } catch (e) { showToast("保存失败：" + e.message, "error"); }
   });
 }
 
 function extractUserIdFromUrl(url) {
   try {
-    const parts = new URL(url).pathname.split("/").filter(Boolean);
-    if (parts[0] === "user" && parts[1] === "profile") return parts[3] || parts[2] || "";
-  } catch {}
-  return "";
+    const m = new URL(url).pathname.match(/^\/user\/profile\/([^/]+)/);
+    return m?.[1] || "";
+  } catch { return ""; }
+}
+
+function extractXhsUrls(input) {
+  const matches = Array.from(input.matchAll(/https?:\/\/(?:(?:www\.)?xiaohongshu\.com|xhslink\.com)\/[^\s，,。]+/gi));
+  const urls = [];
+  const seen = new Set();
+  for (const match of matches) {
+    let value = match[0];
+    try { value = new URL(value).toString(); } catch {}
+    if (!seen.has(value)) {
+      seen.add(value);
+      urls.push(value);
+    }
+  }
+  return urls;
 }
 
 function buildMiniChart(checks) {
@@ -250,7 +466,9 @@ $("#accUrl").addEventListener("blur", async () => {
     const r = await api("/api/accounts/detect-name", { method: "POST", body: JSON.stringify({ url }) });
     if (r.name) $("#accName").value = r.name;
     if (r.avatarUrl) $("#accUrl").dataset.avatarUrl = r.avatarUrl;
-  } catch {}
+  } catch (e) {
+    showToast(e.message || "自动识别失败，请检查登录 Cookie", "error");
+  }
   if (btn) { btn.textContent = "自动识别"; btn.disabled = false; }
 });
 
@@ -266,7 +484,7 @@ $("#cancelAccountBtn").addEventListener("click", () => {
 $("#saveAccountBtn").addEventListener("click", async () => {
   try {
     const data = { brand: $("#accBrand").value, accountName: $("#accName").value, accountUrl: $("#accUrl").value, tone: $("#accTone").value, industry: $("#accIndustry").value, priority: $("#accPriority").value };
-    if (!data.brand) { alert("请填写品牌名称"); return; }
+    if (!data.brand) { showToast("请填写品牌名称", "warning"); return; }
     const avatarUrl = $("#accUrl").dataset.avatarUrl || "";
     delete $("#accUrl").dataset.avatarUrl;
     const created = await api("/api/accounts", { method: "POST", body: JSON.stringify(data) });
@@ -277,7 +495,7 @@ $("#saveAccountBtn").addEventListener("click", async () => {
     $("#accPriority").value = "中";
     document.getElementById("newAccountForm").style.display = "none";
     await refresh();
-  } catch (e) { alert(`添加失败：${e.message}`); }
+  } catch (e) { showToast(`添加失败：${e.message}`, "error"); }
 });
 
 // ===== Crawl =====
@@ -299,27 +517,80 @@ function showCrawlResult(result) {
 }
 
 $("#startCrawlBtn").addEventListener("click", async () => {
-  const url = $("#crawlUrl").value.trim();
-  if (!url) return;
-  const data = { url, brand: $("#crawlBrand").value.trim(), tags: $("#crawlTags").value.split(",").map((s) => s.trim()).filter(Boolean), maxNotes: Number($("#crawlMaxNotes").value || 12) };
+  const inputText = $("#crawlUrl").value.trim();
+  if (!inputText) {
+    showToast("请输入采集链接", "warning");
+    return;
+  }
+  
+  const urls = extractXhsUrls(inputText);
+  if (!urls.length) {
+    showToast("未检测到有效的小红书链接，请检查输入", "warning");
+    return;
+  }
+
+  const brand = $("#crawlBrand").value.trim();
+  const tags = $("#crawlTags").value.split(",").map((s) => s.trim()).filter(Boolean);
+  const maxNotes = Number($("#crawlMaxNotes").value || 12);
+  
   setCrawlBusy(true);
   const status = $("#crawlStatus");
   status.className = "crawl-status-idle running";
-  status.textContent = "采集中，请稍候…";
   showCrawlResult(null);
+
+  const startTime = Date.now();
+  let completedCount = 0;
+  let successNotes = [];
+  let skippedNotes = [];
+  let failedCount = 0;
+
+  // 启动定时器更新时间
+  const timerInterval = setInterval(() => {
+    const seconds = Math.round((Date.now() - startTime) / 1000);
+    status.textContent = `采集中（已耗时 ${seconds} 秒）：正在处理第 ${completedCount + 1}/${urls.length} 个链接...`;
+  }, 1000);
+
   try {
-    const result = await api("/api/crawl", { method: "POST", body: JSON.stringify(data) });
-    status.className = "crawl-status-idle success";
-    status.textContent = `采集完成：入库 ${result.notes.length} 条，跳过 ${result.skipped?.length || 0} 条`;
-    showCrawlResult(result);
+    for (const url of urls) {
+      status.textContent = `采集中（当前链接）：正在处理第 ${completedCount + 1}/${urls.length} 个链接...`;
+      try {
+        const result = await api("/api/crawl", {
+          method: "POST",
+          body: JSON.stringify({ url, brand, tags, maxNotes })
+        });
+        if (result.notes) successNotes.push(...result.notes);
+        if (result.skipped) skippedNotes.push(...result.skipped);
+      } catch (err) {
+        failedCount++;
+        showToast(`链接采集失败: ${url.slice(0, 30)}... 原因: ${err.message}`, "error");
+      }
+      completedCount++;
+    }
+
+    clearInterval(timerInterval);
+    const totalTime = Math.round((Date.now() - startTime) / 1000);
+    
+    if (successNotes.length > 0 || skippedNotes.length > 0) {
+      status.className = "crawl-status-idle success";
+      status.textContent = `✅ 采集完成：入库 ${successNotes.length} 条，跳过 ${skippedNotes.length} 条，失败 ${failedCount} 条，耗时 ${totalTime} 秒`;
+      showToast(`采集完成！入库 ${successNotes.length} 条，耗时 ${totalTime} 秒`, "success");
+    } else {
+      status.className = "crawl-status-idle error";
+      status.textContent = `❌ 采集全部失败，耗时 ${totalTime} 秒`;
+    }
+
+    showCrawlResult({ notes: successNotes, skipped: skippedNotes });
     await refresh();
     await loadRecentBrands();
     await renderCrawlJobs();
   } catch (e) {
+    clearInterval(timerInterval);
     status.className = "crawl-status-idle error";
-    status.textContent = `✗ 采集失败：${e.message}`;
+    status.textContent = `✗ 运行异常：${e.message}`;
+    showToast(`采集异常: ${e.message}`, "error");
+  } finally {
+    setCrawlBusy(false);
   }
-  finally { setCrawlBusy(false); }
 });
 
 async function renderCrawlJobs() {
@@ -451,6 +722,9 @@ function updateLibStats() {
 function renderNotes() {
   updateLibStats();
   const filtered = state.notes.filter(noteMatches);
+  if ($("#sub-page-lib-analysis")?.classList.contains("active")) {
+    renderContentAnalysis();
+  }
   if (state.viewMode === "table") {
     renderNoteTable(filtered);
     return;
@@ -458,7 +732,7 @@ function renderNotes() {
   const container = $("#notesList");
   if (!filtered.length) {
     container.className = "lib-grid empty-state";
-    container.innerHTML = '<div class="icon">📚</div><p>案例库暂无内容，先去采集吧</p>';
+    container.innerHTML = renderEmptyState("📚", "案例库暂无内容", "先去“采集”页面采集小红书笔记");
     return;
   }
   container.className = "lib-grid";
@@ -473,16 +747,21 @@ function renderNotes() {
       seenPaths.add(key);
       uniqueAssets.push(a);
     }
-    const images = uniqueAssets.filter(a => a.kind === "image" && a.localPath);
-    const videos = uniqueAssets.filter(a => a.kind === "video" && a.localPath);
-    const first = images[0];
+    const images = uniqueAssets.filter(a => a.kind === "image");
+    const videos = uniqueAssets.filter(a => a.kind === "video");
+    const first = images.find(a => a.localPath) || images[0];
     const isVideo = n.contentType === "视频笔记" || videos.length > 0;
     const isLive = n.contentType === "Live图文";
     const hasMulti = images.length > 1 && !isVideo;
-    const tags = (n.tags || []).filter(Boolean);
-    const tagHtml = tags.slice(0, 2).map(t => `<span>${esc(t)}</span>`).join("");
-    const extraTag = tags.length > 2 ? `<span class="lib-tag-more">+${tags.length - 2}</span>` : "";
     const imgSrc = first ? esc(fileUrl(first)) : "";
+    let authorAvatar = "";
+    const rawAvatar = n.raw?.note?.author?.avatar || n.raw?.note?.user?.avatar || n.raw?.user?.avatar || "";
+    if (rawAvatar) {
+      authorAvatar = rawAvatar;
+    } else {
+      const matched = (state.followedAccounts || []).find(a => a.user_id === n.authorId || a.author_name === n.authorName);
+      if (matched) authorAvatar = matched.avatar_url;
+    }
     return `<div class="lib-card" data-id="${esc(n.id)}">
       <div class="lib-card-cover">
         ${imgSrc ? `<img class="lib-card-img" src="${imgSrc}" alt="" loading="lazy" />` : `<div class="lib-card-placeholder">📄</div>`}
@@ -499,10 +778,12 @@ function renderNotes() {
       <div class="lib-card-body">
         <div class="lib-card-title">${esc(n.title || "未命名")}</div>
         <div class="lib-card-footer">
-          <span class="lib-card-author">${esc(n.authorName || n.brand || "未知")}</span>
+          <div class="lib-card-author-info">
+            ${authorAvatar ? `<img class="lib-card-avatar" src="${esc(authorAvatar)}" alt="" />` : `<span class="lib-card-avatar-letter">${esc((n.authorName || n.brand || "?")[0])}</span>`}
+            <span class="lib-card-author">${esc(n.authorName || n.brand || "未知")}</span>
+          </div>
           <span class="lib-card-likes">❤ ${n.metrics?.likedCount || n.metrics?.likes || 0}</span>
         </div>
-        ${tagHtml || extraTag ? `<div class="lib-card-tags">${tagHtml}${extraTag}</div>` : ""}
       </div>
     </div>`;
   }).join("");
@@ -667,13 +948,13 @@ async function handleNoteClick(e) {
   }
   const del = e.target.closest("[data-delete]");
   if (del) {
-    if (!confirm("确认删除这条笔记及其素材？")) return;
+    if (!await showConfirm("确认删除这条笔记及其素材？", { danger: true, title: "确认删除" })) return;
     del.disabled = true;
     del.textContent = "…";
     try {
       await api(`/api/notes/${del.dataset.delete}`, { method: "DELETE" });
       await refresh();
-    } catch (err) { alert(`删除失败：${err.message}`); del.textContent = "删除"; del.disabled = false; }
+    } catch (err) { showToast(`删除失败：${err.message}`, "error"); del.textContent = "删除"; del.disabled = false; }
     return;
   }
   const commentsBtn = e.target.closest("[data-comments]");
@@ -722,7 +1003,7 @@ async function handleNoteClick(e) {
     try {
       await api(`/api/notes/${noteId}/library`, { method: "POST", body: JSON.stringify({ libraryType: nextLib || null }) });
       await refresh();
-    } catch (err) { alert(`分类失败：${err.message}`); }
+    } catch (err) { showToast(`分类失败：${err.message}`, "error"); }
     return;
   }
   // 卡片点击打开详情（排除按钮和checkbox）
@@ -787,6 +1068,15 @@ function fillNotePanel(overlay, note) {
   const tags = (note.tags || []).filter(Boolean);
   const a = note.analysis || {};
 
+  let authorAvatar = "";
+  const rawAvatar = note.raw?.note?.author?.avatar || note.raw?.note?.user?.avatar || note.raw?.user?.avatar || "";
+  if (rawAvatar) {
+    authorAvatar = rawAvatar;
+  } else {
+    const matched = (state.followedAccounts || []).find(f => f.user_id === note.authorId || f.author_name === note.authorName);
+    if (matched) authorAvatar = matched.avatar_url;
+  }
+
   // Left: media (images + videos mixed in original order)
   const leftEl = overlay.querySelector("#ndpLeft");
   const mediaItems = uniqueAssets.filter(a => (a.kind === "image" || a.kind === "video") && a.localPath);
@@ -821,27 +1111,59 @@ function fillNotePanel(overlay, note) {
 
   // Right: info
   const rightEl = overlay.querySelector("#ndpRight");
-  const analysisHtml = a.topicLogic ? `<div style="margin-top:14px;padding:12px 14px;background:#f9fafb;border-radius:8px;border:1px solid #f0f1f3">
-    <div style="font-weight:600;font-size:13px;margin-bottom:8px;color:var(--text)">AI 拆解</div>
-    <div style="font-size:12px;line-height:1.6;color:var(--text-secondary)"><span style="font-weight:500;color:var(--text-muted)">选题</span> ${esc(a.topicLogic)}<br><span style="font-weight:500;color:var(--text-muted)">开头</span> ${esc(a.openingHook)}${a.howWeCanUse ? `<br><span style="font-weight:500;color:var(--text-muted)">借鉴</span> ${esc(a.howWeCanUse)}` : ""}</div></div>` : "";
   rightEl.innerHTML = `
-    <h2 style="font-size:15px;font-weight:700;margin:0 0 8px;line-height:1.45">${esc(note.title || "未命名")}</h2>
-    <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:12px;color:var(--text-muted);margin-bottom:8px">
-      ${note.brand ? `<span style="font-weight:500;color:var(--text)">${esc(note.brand)}</span><span>·</span>` : ""}
-      <span>${esc(note.authorName || "未知")}</span><span>·</span>
-      <span>${esc(note.contentType || "")}</span>
-      <span style="margin-left:2px">❤ ${m.likedCount || m.likes || 0}</span>
-      <span>💬 ${m.commentCount || m.comments || 0}</span>
-      <span>📌 ${m.collectedCount || m.collects || 0}</span>
+    <!-- Rednote Author Bar -->
+    <div class="ndp-author-bar" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--line-light)">
+      <div style="display:flex;align-items:center;gap:10px">
+        ${authorAvatar ? `<img class="ndp-author-avatar" src="${esc(authorAvatar)}" style="width:36px;height:36px;border-radius:50%;object-fit:cover" />` : `<span class="ndp-author-avatar-letter" style="width:36px;height:36px;border-radius:50%;background:var(--primary-subtle);color:var(--primary);display:inline-flex;align-items:center;justify-content:center;font-weight:600;font-size:14px">${esc((note.authorName || note.brand || "?")[0])}</span>`}
+        <div>
+          <div style="font-weight:600;font-size:13px;color:var(--text)">${esc(note.authorName || "未知作者")}</div>
+          <div style="font-size:11px;color:var(--text-muted)">${note.brand ? esc(note.brand) : "创作者"}</div>
+        </div>
+      </div>
+      <button style="border-radius:999px;padding:4px 14px;font-size:12px;height:28px;background:var(--btn-bg);color:#fff;border:none;cursor:pointer">已关注</button>
     </div>
-    ${note.libraryType || tags.length ? `<div style="display:flex;flex-wrap:wrap;gap:4px;margin-bottom:10px">${note.libraryType ? `<span class="tag lib-tag">${esc(note.libraryType)}</span>` : ""}${tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
-    ${note.description ? `<div style="font-size:13px;color:var(--text-secondary);line-height:1.8;white-space:pre-wrap;margin-bottom:10px">${esc(note.description.slice(0, 2000))}</div>` : ""}
-    ${analysisHtml}
-    <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
-      <a class="ndp-source-link" href="${esc(note.sourceUrl)}" target="_blank">🔗 原文</a>
-      <button data-ndp-comments="${esc(note.id)}" style="display:inline-flex;align-items:center;gap:4px;height:30px;padding:0 12px;border:1px solid var(--line);border-radius:6px;background:transparent;font-size:12px;color:var(--text-secondary);cursor:pointer">💬 评论</button>
-    </div>
-    <div id="ndpComments-${esc(note.id)}" style="display:none;margin-top:10px;max-height:260px;overflow-y:auto;font-size:12px;border-top:1px solid var(--line);padding-top:10px"></div>`;
+
+    <!-- Detail Main Content -->
+    <div class="ndp-detail-content" style="flex:1;min-height:0;display:flex;flex-direction:column;gap:12px">
+      <h2 style="font-size:16px;font-weight:700;margin:0;line-height:1.45;color:var(--text)">${esc(note.title || "未命名")}</h2>
+      
+      ${note.description ? `<div style="font-size:13px;color:var(--text);line-height:1.8;white-space:pre-wrap;margin-bottom:4px;user-select:text">${esc(note.description.slice(0, 2000))}</div>` : ""}
+      
+      ${note.libraryType || tags.length ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:4px">${note.libraryType ? `<span class="tag lib-tag">${esc(note.libraryType)}</span>` : ""}${tags.map(t => `<span class="tag">${esc(t)}</span>`).join("")}</div>` : ""}
+
+      <!-- Rednote Interaction Data -->
+      <div style="display:flex;align-items:center;gap:16px;font-size:12px;color:var(--text-muted);border-top:1px solid var(--line-light);border-bottom:1px solid var(--line-light);padding:10px 0">
+        <span>❤ ${m.likedCount || m.likes || 0}</span>
+        <span>💬 ${m.commentCount || m.comments || 0}</span>
+        <span>📌 ${m.collectedCount || m.collects || 0}</span>
+        ${note.publishedAt ? `<span style="margin-left:auto">${note.publishedAt.slice(0, 10)}</span>` : ""}
+      </div>
+
+      <!-- AI Deep Analyze Section -->
+      ${a.topicLogic ? `
+      <div class="ndp-analysis-section" style="margin-top:8px;padding:14px;background:var(--surface-hover);border-radius:10px;border:1px solid var(--line)">
+        <div style="font-weight:700;font-size:13px;margin-bottom:10px;color:var(--text);display:flex;align-items:center;gap:6px">🧠 AI 深度拆解</div>
+        <div style="font-size:12px;line-height:1.6;color:var(--text-secondary);display:flex;flex-direction:column;gap:6px">
+          <div><span style="font-weight:600;color:var(--text-muted)">选题逻辑：</span>${esc(a.topicLogic)}</div>
+          <div><span style="font-weight:600;color:var(--text-muted)">开头钩子：</span>${esc(a.openingHook)}</div>
+          ${a.howWeCanUse ? `<div><span style="font-weight:600;color:var(--text-muted)">借鉴点：</span>${esc(a.howWeCanUse)}</div>` : ""}
+        </div>
+      </div>` : ""}
+
+      <!-- Actions -->
+      <div style="margin-top:10px;display:flex;gap:10px;align-items:center">
+        <a class="ndp-source-link" href="${esc(note.sourceUrl)}" target="_blank" style="font-size:12px;color:var(--primary);text-decoration:none;font-weight:500;display:inline-flex;align-items:center;gap:4px">🔗 查看原作品网页</a>
+      </div>
+
+      <!-- Rednote Comments List -->
+      <div class="ndp-comments-section" style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px">
+        <div style="font-weight:700;font-size:13px;color:var(--text);margin-bottom:10px">💬 精彩评论</div>
+        <div id="ndpComments-${esc(note.id)}" style="max-height:300px;overflow-y:auto;font-size:12px;display:flex;flex-direction:column;gap:10px">
+          <p class="muted" style="color:var(--text-muted)">评论加载中…</p>
+        </div>
+      </div>
+    </div>`;
 
   // Re-bind carousel
   const slides = overlay.querySelectorAll("[data-nd-slide]");
@@ -860,41 +1182,34 @@ function fillNotePanel(overlay, note) {
   carouselImgs.forEach((item) => {
     if (item.tagName === "IMG") item.addEventListener("click", () => item.requestFullscreen?.());
   });
+
   // Keyboard nav
   overlay.addEventListener("keydown", (e) => {
     if (e.key === "ArrowLeft") ndShow((ndIdx - 1 + slides.length) % slides.length);
     if (e.key === "ArrowRight") ndShow((ndIdx + 1) % slides.length);
   });
 
-  // Comments toggle
-  const cmtBtn = overlay.querySelector(`[data-ndp-comments="${esc(note.id)}"]`);
-  if (cmtBtn) {
-    cmtBtn.addEventListener("click", async () => {
-      const container = document.getElementById(`ndpComments-${esc(note.id)}`);
-      if (!container) return;
-      if (container.style.display !== "none") { container.style.display = "none"; return; }
-      container.style.display = "block";
-      if (container.dataset.loaded) return;
-      container.dataset.loaded = "1";
-      container.innerHTML = '<p class="muted" style="font-size:12px">加载中…</p>';
-      try {
-        const result = await api(`/api/notes/${note.id}/comments`, { method: "POST", body: "{}" });
-        if (!result.comments?.length) {
-          container.innerHTML = '<p class="muted" style="font-size:12px">暂无评论</p>';
-        } else {
-          container.innerHTML = result.comments.map(c => `
-            <div style="padding:6px 0;border-bottom:1px solid var(--line);font-size:12px">
-              <strong>${esc(c.authorName || c.author || "用户")}</strong>
-              <div style="margin:2px 0;color:var(--text-secondary)">${esc(c.content || "")}</div>
-              <div style="font-size:11px;color:var(--text-muted)">❤ ${c.likes || 0}${c.time ? ` · ${esc(c.time)}` : ""}</div>
-            </div>
-          `).join("");
-        }
-      } catch (err) {
-        container.innerHTML = `<p style="color:var(--red);font-size:12px">获取失败：${esc(err.message)}</p>`;
+  // Auto fetch comments
+  (async () => {
+    const container = document.getElementById(`ndpComments-${esc(note.id)}`);
+    if (!container) return;
+    try {
+      const result = await api(`/api/notes/${note.id}/comments`, { method: "POST", body: "{}" });
+      if (!result.comments?.length) {
+        container.innerHTML = '<p class="muted" style="color:var(--text-muted);font-size:12px">暂无评论</p>';
+      } else {
+        container.innerHTML = result.comments.map(c => `
+          <div style="padding-bottom:8px;border-bottom:1px solid var(--line-light);font-size:12px">
+            <strong style="color:var(--text)">${esc(c.authorName || c.author || "用户")}</strong>
+            <div style="margin:4px 0 2px;color:var(--text-secondary);line-height:1.4">${esc(c.content || "")}</div>
+            <div style="font-size:11px;color:var(--text-muted)">❤ ${c.likes || 0}${c.time ? ` · ${esc(c.time)}` : ""}</div>
+          </div>
+        `).join("");
       }
-    });
-  }
+    } catch (err) {
+      container.innerHTML = `<p style="color:var(--red);font-size:12px">获取失败：${esc(err.message)}</p>`;
+    }
+  })();
 
   // Close button
   overlay.querySelector("#ndpClose")?.addEventListener("click", () => removeNotePanel());
@@ -993,7 +1308,7 @@ function renderXhsAccounts() {
       });
       list.querySelectorAll("[data-account-delete]").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          if (!confirm("确认删除此账号？")) return;
+          if (!await showConfirm("确认删除此账号？", { danger: true, title: "确认删除" })) return;
           await api(`/api/xhs-accounts/${btn.dataset.accountDelete}`, { method: "DELETE" });
           renderXhsAccounts();
         });
@@ -1024,8 +1339,8 @@ $("#extractCookieBtn")?.addEventListener("click", async () => {
   btn.disabled = true; btn.textContent = "提取中…";
   try {
     const r = await api("/api/settings/xhs-cookie/from-browser", { method: "POST", body: "{}" });
-    alert(`✅ Cookie 提取成功！共 ${r.cookieCount} 个字段，已保存到 ${r.cookiePath}`);
-  } catch (e) { alert(`❌ 提取失败：${e.message}`); }
+    showToast(`Cookie 提取成功！共 ${r.cookieCount} 个字段，已保存到 ${r.cookiePath}`, "success");
+  } catch (e) { showToast(`提取失败：${e.message}`, "error"); }
   finally { btn.disabled = false; btn.textContent = "从 Chrome 提取 Cookie"; }
 });
 
@@ -1042,8 +1357,8 @@ $("#savePastedCookie")?.addEventListener("click", async () => {
     $("#pasteCookieInput").value = "";
     document.getElementById("pasteCookieArea").style.display = "none";
     renderXhsAccounts();
-    alert("✅ Cookie 已保存，xhshow API 可使用");
-  } catch (e) { alert("保存失败：" + e.message); }
+    showToast("Cookie 已保存，xhshow API 可使用", "success");
+  } catch (e) { showToast("保存失败：" + e.message, "error"); }
 });
 
 // ===== Scheduled Tasks =====
@@ -1076,7 +1391,7 @@ function renderScheduledTasks() {
       });
       list.querySelectorAll("[data-schedule-delete]").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          if (!confirm("确认删除此任务？")) return;
+          if (!await showConfirm("确认删除此任务？", { danger: true, title: "确认删除" })) return;
           await api(`/api/scheduled-tasks/${btn.dataset.scheduleDelete}`, { method: "DELETE" });
           renderScheduledTasks();
         });
@@ -1196,7 +1511,7 @@ $("#saveScheduleBtn")?.addEventListener("click", async () => {
     $("#scheduleName").value = ""; $("#scheduleUrl").value = "";
     document.getElementById("scheduleForm").style.display = "none";
     renderScheduledTasks();
-  } catch (e) { alert("创建失败：" + e.message); }
+  } catch (e) { showToast("创建失败：" + e.message, "error"); }
 });
 
 // ===== Monitors =====
@@ -1244,7 +1559,7 @@ function renderCharts(s, interaction) {
     type, data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: colors.map(() => "transparent"), borderWidth: 0, label: label || "" }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: type === "pie", position: "bottom", labels: { boxWidth: 12, padding: 8, font: { size: 11 } } } }, scales: type === "bar" ? { y: { beginAtZero: true, ticks: { font: { size: 11 } } }, x: { ticks: { font: { size: 11 } } } } : {} }
   });
-  const COLORS = ["#6b8f8a", "#c49a7a", "#9a8aaa", "#c47a6a", "#c4a07a", "#8a9a7a", "#a8b89a", "#7aa0a0", "#c0a0a0", "#9080a0"];
+  const COLORS = ["#7c3aed", "#06b6d4", "#db2777", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#6366f1"];
 
   if (window.trendChart) window.trendChart.destroy();
   if (window.typeChart) window.typeChart.destroy();
@@ -1272,7 +1587,7 @@ function renderCharts(s, interaction) {
   }
   const statusCanvas = document.getElementById("chartStatus");
   if (s.byStatus?.length && statusCanvas) {
-    window.statusChart = new Chart(statusCanvas, chartOpts("pie", s.byStatus.map((d) => d.status), s.byStatus.map((d) => d.count), ["#6b8f8a", "#c49a7a", "#c47a6a", "#c4a09a"]));
+    window.statusChart = new Chart(statusCanvas, chartOpts("pie", s.byStatus.map((d) => d.status), s.byStatus.map((d) => d.count), ["#10b981", "#ef4444", "#f59e0b", "#3b82f6"]));
   }
 
   // Interaction trend chart
@@ -1359,12 +1674,24 @@ async function renderBrandCompare() {
 }
 
 // ===== Content Analysis =====
-const CA_COLORS = ["#6b8f8a", "#c49a7a", "#9a8aaa", "#c47a6a", "#c4a07a", "#8a9a7a", "#a8b89a", "#7aa0a0", "#c0a0a0", "#9080a0"];
+const CA_COLORS = ["#7c3aed", "#06b6d4", "#db2777", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#6366f1"];
 
 async function renderContentAnalysis() {
   const range = $("#caRange")?.value || "";
+  const libraryType = $(".lib-tab.active")?.dataset.libTab || "";
+  const q = $("#searchInput")?.value || "";
+  const brand = $("#brandFilter")?.value || "";
+  const contentType = $("#contentTypeFilter")?.value || "";
+
+  const queryParams = new URLSearchParams();
+  if (range) queryParams.set("range", range);
+  if (libraryType) queryParams.set("libraryType", libraryType);
+  if (q) queryParams.set("q", q);
+  if (brand) queryParams.set("brand", brand);
+  if (contentType) queryParams.set("contentType", contentType);
+
   try {
-    const data = await api(`/api/stats/content-analysis?range=${range}`);
+    const data = await api(`/api/stats/content-analysis?${queryParams.toString()}`);
     $("#caTotalNotes").textContent = data.totalNotes;
     $("#caHookRate").textContent = (data.titleStats?.hookRate || 0) + "%";
     $("#caAvgTitle").textContent = data.titleStats?.avgTitleLength || 0;
@@ -1373,7 +1700,7 @@ async function renderContentAnalysis() {
     $("#caMaxTotal").textContent = data.engagementStats?.maxTotal || 0;
     renderCaTopicCloud(data.bodyStats?.topics || []);
     if (!chartAvailable()) {
-      document.querySelectorAll("#page-content-analysis canvas").forEach(c => {
+      document.querySelectorAll("#sub-page-lib-analysis canvas").forEach(c => {
         c.parentElement.innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-muted)"><p>图表库加载失败，请刷新页面</p></div>';
       });
       return;
@@ -1385,12 +1712,19 @@ async function renderContentAnalysis() {
 $("#caRange")?.addEventListener("change", renderContentAnalysis);
 
 function renderCaCharts(data) {
-  if (window.caHookChart) window.caHookChart.destroy();
-  if (window.caPatternChart) window.caPatternChart.destroy();
-  if (window.caTypeChart) window.caTypeChart.destroy();
-  if (window.caGoalChart) window.caGoalChart.destroy();
-  if (window.caVisualChart) window.caVisualChart.destroy();
-  if (window.caLibChart) window.caLibChart.destroy();
+  const chartsToDestroy = ["caHookChart", "caPatternChart", "caTypeChart", "caGoalChart", "caVisualChart", "caLibChart"];
+  for (const cName of chartsToDestroy) {
+    if (window[cName]) {
+      try {
+        if (typeof window[cName].destroy === "function") {
+          window[cName].destroy();
+        }
+      } catch (err) {
+        console.warn(`Failed to destroy chart ${cName}:`, err);
+      }
+      window[cName] = null;
+    }
+  }
 
   const pieOpts = (labels, dataValues) => ({
     type: "pie",
@@ -1406,37 +1740,49 @@ function renderCaCharts(data) {
   const hooks = data.titleStats?.hookDistribution || {};
   const hookEl = document.getElementById("caHookChart");
   if (hookEl && Object.keys(hooks).length) {
-    window.caHookChart = new Chart(hookEl, barOpts(Object.keys(hooks), Object.values(hooks), "笔记数"));
+    try {
+      window.caHookChart = new Chart(hookEl, barOpts(Object.keys(hooks), Object.values(hooks), "笔记数"));
+    } catch (err) { console.error("Failed to render caHookChart:", err); }
   }
 
   const patterns = data.titleStats?.patternDistribution || {};
   const patEl = document.getElementById("caPatternChart");
   if (patEl && Object.keys(patterns).length) {
-    window.caPatternChart = new Chart(patEl, barOpts(Object.keys(patterns), Object.values(patterns), "笔记数"));
+    try {
+      window.caPatternChart = new Chart(patEl, barOpts(Object.keys(patterns), Object.values(patterns), "笔记数"));
+    } catch (err) { console.error("Failed to render caPatternChart:", err); }
   }
 
   const types = data.contentTypes || [];
   const typeEl = document.getElementById("caTypeChart");
   if (typeEl && types.length) {
-    window.caTypeChart = new Chart(typeEl, pieOpts(types.map((d) => d.type), types.map((d) => d.count)));
+    try {
+      window.caTypeChart = new Chart(typeEl, pieOpts(types.map((d) => d.type), types.map((d) => d.count)));
+    } catch (err) { console.error("Failed to render caTypeChart:", err); }
   }
 
   const goals = data.marketingGoals || [];
   const goalEl = document.getElementById("caGoalChart");
   if (goalEl && goals.length) {
-    window.caGoalChart = new Chart(goalEl, pieOpts(goals.map((d) => d.goal), goals.map((d) => d.count)));
+    try {
+      window.caGoalChart = new Chart(goalEl, pieOpts(goals.map((d) => d.goal), goals.map((d) => d.count)));
+    } catch (err) { console.error("Failed to render caGoalChart:", err); }
   }
 
   const visuals = data.visualStyle || [];
   const visEl = document.getElementById("caVisualChart");
   if (visEl && visuals.length) {
-    window.caVisualChart = new Chart(visEl, barOpts(visuals.map((d) => d.style), visuals.map((d) => d.count), "笔记数"));
+    try {
+      window.caVisualChart = new Chart(visEl, barOpts(visuals.map((d) => d.style), visuals.map((d) => d.count), "笔记数"));
+    } catch (err) { console.error("Failed to render caVisualChart:", err); }
   }
 
   const libs = data.libraries || {};
   const libEl = document.getElementById("caLibChart");
   if (libEl && Object.keys(libs).length) {
-    window.caLibChart = new Chart(libEl, barOpts(Object.keys(libs), Object.values(libs), "笔记数"));
+    try {
+      window.caLibChart = new Chart(libEl, barOpts(Object.keys(libs), Object.values(libs), "笔记数"));
+    } catch (err) { console.error("Failed to render caLibChart:", err); }
   }
 }
 
@@ -1632,7 +1978,7 @@ async function openSettings() {
     renderSettingsTabs();
     showSettingsTab("tab-ai");
     $("#settingsOverlay").style.display = "flex";
-  } catch (e) { alert(`加载设置失败：${e.message}`); }
+  } catch (e) { showToast(`加载设置失败：${e.message}`, "error"); }
 }
 
 function renderSettingsTabs() {
@@ -2028,7 +2374,7 @@ $("#settingsForm").addEventListener("submit", async (e) => {
   try {
     await api("/api/settings", { method: "PUT", body: JSON.stringify(readSettingsForm()) });
     $("#settingsOverlay").style.display = "none";
-  } catch (err) { alert(`保存失败：${err.message}`); }
+  } catch (err) { showToast(`保存失败：${err.message}`, "error"); }
 });
 
 // ===== Notifications =====
@@ -2098,23 +2444,18 @@ if ($("#viewModeSelect")) {
   $("#viewModeSelect").value = state.viewMode;
 }
 
-function showToast(msg, type = "success") {
-  const t = document.createElement("div");
-  t.style.cssText = `position:fixed;top:16px;right:16px;z-index:9999;padding:12px 20px;border-radius:8px;font-size:14px;box-shadow:0 4px 12px rgba(0,0,0,0.15);background:${type === "error" ? "#fef2f2" : "#f0fdf4"};color:${type === "error" ? "#991b1b" : "#166534"};transition:opacity 0.3s`;
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => { t.style.opacity = "0"; setTimeout(() => t.remove(), 300); }, 3000);
-}
+// showToast / showConfirm 已在文件顶部由 initFeedbackSystem IIFE 定义
 
 $("#batchDeleteBtn")?.addEventListener("click", async () => {
   const ids = [...state.selectedIds];
-  if (!ids.length || !confirm(`确认删除 ${ids.length} 条笔记及其素材？`)) return;
+  if (!ids.length) return;
+  if (!await showConfirm(`即将删除 ${ids.length} 条笔记及其本地素材文件，此操作不可撤销！`, { danger: true, title: `批量删除 ${ids.length} 条` })) return;
   try {
     const r = await api("/api/notes/batch-delete", { method: "POST", body: JSON.stringify({ ids }) });
     clearSelection();
     await refresh();
-    showToast(`✅ 已删除 ${r.deleted} 条笔记`);
-  } catch (e) { showToast(`❌ ${e.message}`, "error"); }
+    showToast(`已删除 ${r.deleted} 条笔记`, "success");
+  } catch (e) { showToast(`删除失败: ${e.message}`, "error"); }
 });
 
 $("#batchExportBtn")?.addEventListener("click", renderBatchExportModal);
@@ -2322,11 +2663,11 @@ async function renderLogs() {
 
 $("#logRefreshBtn").addEventListener("click", renderLogs);
 $("#logClearBtn").addEventListener("click", async () => {
-  if (!confirm("确定清空日志？此操作不可恢复")) return;
+  if (!await showConfirm("确定清空日志？此操作不可恢复", { danger: true, title: "确认清空" })) return;
   try {
     await api("/api/logs", { method: "DELETE" });
     renderLogs();
-  } catch (e) { alert(`清空失败：${e.message}`); }
+  } catch (e) { showToast(`清空失败：${e.message}`, "error"); }
 });
 let _logSearchTimer = null;
 $("#logSearch").addEventListener("input", function () {
@@ -2386,6 +2727,10 @@ $("#selectModeBtn")?.addEventListener("click", () => {
 
 // ===== Refresh =====
 async function refresh() {
+  const container = $("#notesList");
+  if (container) {
+    showSkeleton(container, 8);
+  }
   const [accounts, notes, followed] = await Promise.all([api("/api/accounts"), api("/api/notes"), api("/api/follow/accounts")]);
   state.accounts = accounts;
   state.notes = notes;

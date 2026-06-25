@@ -28,10 +28,18 @@ export function createNoteStore(db, rootDir) {
 
   function batchHydrateNotes(rows) {
     if (!rows.length) return [];
-    const noteIds = rows.map(r => r.id);
-    const placeholders = noteIds.map(() => "?").join(",");
-
-    const allAssets = _("SELECT * FROM assets WHERE note_id IN (" + placeholders + ") ORDER BY created_at ASC").all(...noteIds);
+    const SQLITE_CHUNK = 500;
+    const allAssets = [];
+    const allAnalysis = [];
+    for (let i = 0; i < rows.length; i += SQLITE_CHUNK) {
+      const chunk = rows.slice(i, i + SQLITE_CHUNK);
+      const noteIds = chunk.map(r => r.id);
+      const placeholders = noteIds.map(() => "?").join(",");
+      const chunkAssets = _("SELECT * FROM assets WHERE note_id IN (" + placeholders + ") ORDER BY created_at ASC").all(...noteIds);
+      for (const a of chunkAssets) allAssets.push(a);
+      const chunkAnalysis = _("SELECT * FROM analysis WHERE note_id IN (" + placeholders + ")").all(...noteIds);
+      for (const a of chunkAnalysis) allAnalysis.push(a);
+    }
     const assetsByNote = new Map();
     for (const a of allAssets) {
       if (!assetsByNote.has(a.note_id)) assetsByNote.set(a.note_id, []);
@@ -43,13 +51,16 @@ export function createNoteStore(db, rootDir) {
         fileId: a.file_id, traceId: a.trace_id, raw: fromJson(a.raw, {}), createdAt: a.created_at
       });
     }
-
-    const allAnalysis = _("SELECT * FROM analysis WHERE note_id IN (" + placeholders + ")").all(...noteIds);
     const analysisByNote = new Map();
     for (const a of allAnalysis) {
-      analysisByNote.set(a.note_id, { id: a.id, noteId: a.note_id, model: a.model, topicLogic: a.topic_logic, openingHook: a.opening_hook, videoStructure: a.video_structure, sellingPointExpression: a.selling_point_expression, visualStyle: a.visual_style, conversionScript: a.conversion_script, takeaways: a.takeaways, howWeCanUse: a.how_we_can_use, scriptDirections: fromJson(a.script_directions, []), raw: fromJson(a.raw, {}), createdAt: a.created_at });
+      analysisByNote.set(a.note_id, {
+        id: a.id, noteId: a.note_id, model: a.model, topicLogic: a.topic_logic, openingHook: a.opening_hook,
+        videoStructure: a.video_structure, sellingPointExpression: a.selling_point_expression,
+        visualStyle: a.visual_style, conversionScript: a.conversion_script, takeaways: a.takeaways,
+        howWeCanUse: a.how_we_can_use, scriptDirections: fromJson(a.script_directions, []),
+        raw: fromJson(a.raw, {}), createdAt: a.created_at
+      });
     }
-
     return rows.map(r => hydrateNoteWith(r, assetsByNote.get(r.id) || [], analysisByNote.get(r.id) || null));
   }
 
@@ -150,10 +161,17 @@ export function createNoteStore(db, rootDir) {
       const existing = _("SELECT * FROM notes WHERE id = ?").get(id);
       if (!existing) return false;
       deleteNoteFiles(id, existing);
-      _("DELETE FROM assets WHERE note_id = ?").run(id);
-      _("DELETE FROM analysis WHERE note_id = ?").run(id);
-      _("DELETE FROM crawl_jobs WHERE input_url = ?").run(existing.source_url);
-      _("DELETE FROM notes WHERE id = ?").run(id);
+      db.exec("BEGIN");
+      try {
+        _("DELETE FROM assets WHERE note_id = ?").run(id);
+        _("DELETE FROM analysis WHERE note_id = ?").run(id);
+        _("DELETE FROM crawl_jobs WHERE input_url = ?").run(existing.source_url);
+        _("DELETE FROM notes WHERE id = ?").run(id);
+        db.exec("COMMIT");
+      } catch (e) {
+        try { db.exec("ROLLBACK"); } catch {}
+        throw e;
+      }
       return true;
     },
 
@@ -231,8 +249,12 @@ export function createNoteStore(db, rootDir) {
           const a = n.analysis || {};
           const assets = n.assets || [];
           const imgUrls = assets.filter(a => a.kind === "image" && a.sourceUrl).slice(0, 3).map(a => a.sourceUrl).join("; ");
-          const esc = (v) => `"${String(v || "").replace(/"/g, '""')}"`;
-          lines.push([n.id, n.sourceUrl, n.noteId || "", n.brand, n.authorName, n.authorId || "", esc(n.title), n.contentType || "", n.libraryType || "", n.status, n.publishedAt || "", n.collectedAt, esc((n.tags || []).join("; ")), m.likedCount || m.likeCount || m.likes || 0, m.commentCount || m.comments || 0, m.collectedCount || m.collectCount || m.collects || 0, m.shareCount || m.shares || 0, esc(a.topicLogic || ""), esc(a.openingHook || ""), esc(a.takeaways || ""), esc(imgUrls)].join(","));
+          const csvEsc = (v) => {
+            const s = String(v ?? "");
+            const safe = /^[=+\-@\t\r]/.test(s) ? `'${s}` : s;
+            return `"${safe.replace(/"/g, '""')}"`;
+          };
+          lines.push([n.id, n.sourceUrl, n.noteId || "", n.brand, n.authorName, n.authorId || "", csvEsc(n.title), n.contentType || "", n.libraryType || "", n.status, n.publishedAt || "", n.collectedAt, csvEsc((n.tags || []).join("; ")), m.likedCount || m.likeCount || m.likes || 0, m.commentCount || m.comments || 0, m.collectedCount || m.collectCount || m.collects || 0, m.shareCount || m.shares || 0, csvEsc(a.topicLogic || ""), csvEsc(a.openingHook || ""), csvEsc(a.takeaways || ""), csvEsc(imgUrls)].join(","));
         }
         return lines.join("\n");
       }
@@ -243,20 +265,36 @@ export function createNoteStore(db, rootDir) {
     batchUpdateTags(ids, tags) {
       if (!ids || !ids.length) return 0;
       const tagsJson = JSON.stringify(tags);
+      const updatedAt = now();
+      const CHUNK = 500;
+      let count = 0;
       db.exec("BEGIN");
       try {
-        let count = 0;
-        for (const id of ids) { const e = _("SELECT * FROM notes WHERE id = ?").get(id); if (e) { _("UPDATE notes SET tags = ?, updated_at = ? WHERE id = ?").run(tagsJson, now(), id); count++; } }
-        db.exec("COMMIT"); return count;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const chunk = ids.slice(i, i + CHUNK);
+          const phs = chunk.map(() => "?").join(",");
+          const result = _(`UPDATE notes SET tags = ?, updated_at = ? WHERE id IN (${phs})`).run(tagsJson, updatedAt, ...chunk);
+          count += result.changes;
+        }
+        db.exec("COMMIT");
+        return count;
       } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
     },
     batchUpdateBrand(ids, brand) {
       if (!ids || !ids.length) return 0;
+      const updatedAt = now();
+      const CHUNK = 500;
+      let count = 0;
       db.exec("BEGIN");
       try {
-        let count = 0;
-        for (const id of ids) { const e = _("SELECT * FROM notes WHERE id = ?").get(id); if (e) { _("UPDATE notes SET brand = ?, updated_at = ? WHERE id = ?").run(brand, now(), id); count++; } }
-        db.exec("COMMIT"); return count;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const chunk = ids.slice(i, i + CHUNK);
+          const phs = chunk.map(() => "?").join(",");
+          const result = _(`UPDATE notes SET brand = ?, updated_at = ? WHERE id IN (${phs})`).run(brand, updatedAt, ...chunk);
+          count += result.changes;
+        }
+        db.exec("COMMIT");
+        return count;
       } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
     },
     setNoteLibraryType(id, libType) {
@@ -267,11 +305,19 @@ export function createNoteStore(db, rootDir) {
     },
     batchSetLibraryType(ids, libType) {
       if (!ids || !ids.length) return 0;
+      const updatedAt = now();
+      const CHUNK = 500;
+      let count = 0;
       db.exec("BEGIN");
       try {
-        let count = 0;
-        for (const id of ids) { const e = _("SELECT * FROM notes WHERE id = ?").get(id); if (e) { _("UPDATE notes SET library_type = ?, updated_at = ? WHERE id = ?").run(libType || null, now(), id); count++; } }
-        db.exec("COMMIT"); return count;
+        for (let i = 0; i < ids.length; i += CHUNK) {
+          const chunk = ids.slice(i, i + CHUNK);
+          const phs = chunk.map(() => "?").join(",");
+          const result = _(`UPDATE notes SET library_type = ?, updated_at = ? WHERE id IN (${phs})`).run(libType || null, updatedAt, ...chunk);
+          count += result.changes;
+        }
+        db.exec("COMMIT");
+        return count;
       } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
     }
   };

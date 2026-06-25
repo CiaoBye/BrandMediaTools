@@ -20,7 +20,7 @@ export const aiPresets = [
 export const defaultSettings = {
   xhs: {
     headless: false,
-    maxAccountNotes: 12,
+    maxAccountNotes: 100,
     accountScrollPages: 8,
     accountScrollDelayMs: 1200,
     cookie: "",

@@ -5,7 +5,7 @@ import { sendWebhook } from "./webhook.mjs";
 
 let timer = null;
 let lastHealthCheck = 0;
-let running = false;
+const _runningTasks = new Set(); // 任务级粒度锁，允许不同任务并发执行
 
 import { beijingNow as now } from "./time.mjs";
 
@@ -44,8 +44,6 @@ async function checkAccountHealth(rootDir, storage) {
 }
 
 export async function runSchedulerCycle(rootDir, storage, options = {}) {
-    if (running) return { skipped: true, reason: "上一轮尚未完成" };
-    running = true;
     let processedTasks = 0;
     try {
       const crawlFn = options.crawlXhs || crawlXhs;
@@ -62,6 +60,8 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
       const tasks = storage.getDueTasks();
       for (const task of tasks) {
         processedTasks++;
+        if (_runningTasks.has(task.id)) continue; // 跳过正在运行的任务
+        _runningTasks.add(task.id);
         const logId = storage.createTaskLog(task.id, "运行中", `开始执行：${task.name}`);
         try {
           storage.updateScheduledTask(task.id, { status: "运行中", lastRunAt: now() });
@@ -105,8 +105,14 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
             const followed = storage.getFollowedAccountByUserId(userId);
             let knownNoteIds = [];
             if (followed?.last_cursor) {
-              try { knownNoteIds = JSON.parse(followed.last_cursor); } catch { knownNoteIds = []; }
-              if (!Array.isArray(knownNoteIds)) knownNoteIds = [];
+              try {
+                const parsedIds = JSON.parse(followed.last_cursor);
+                if (Array.isArray(parsedIds)) {
+                  knownNoteIds = parsedIds.filter(nid => {
+                    return !!storage.findNoteBySourceUrl(`https://www.xiaohongshu.com/explore/${nid}`);
+                  });
+                }
+              } catch { knownNoteIds = []; }
             }
             const result = await followFn({ userId, knownNoteIds, brand: task.config.brand }, { rootDir, cookie });
             let newCount = 0;
@@ -146,16 +152,31 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
           storage.updateScheduledTask(task.id, { status: "等待中", nextRunAt: nextRun, lastRunAt: now() });
           storage.finishTaskLog(logId, "成功", `完成，处理 ${noteCount} 条`, noteCount);
         } catch (error) {
-          const nextRun = task.interval_minutes > 0 ? addMinutes(now(), task.interval_minutes) : "";
-          storage.updateScheduledTask(task.id, { status: "失败", nextRunAt: nextRun, lastRunAt: now() });
-          storage.finishTaskLog(logId, "失败", error.message);
+          const isCookieError = error.message.includes("Cookie") || error.message.includes("登录") || error.message.includes("会话") || error.message.includes("过期") || error.message.includes("登录已过期");
+          if (isCookieError) {
+            storage.updateScheduledTask(task.id, { status: "暂停", lastRunAt: now() });
+            storage.finishTaskLog(logId, "失败", `由于抓取使用的 Cookie 已过期失效，定时任务已自动挂起防风控封禁：${error.message}`);
+            sendWebhook(rootDir, "账号掉线自动挂起定时任务", `任务名称：${task.name}\n异常原因：${error.message}\n该任务已被系统自动置为暂停状态以实施安全保护，请登录前端进行 Cookie 重装。`);
+            storage.createNotification({
+              type: "account_expired",
+              title: `定时任务「${task.name}」已自动暂停`,
+              message: `检测到抓取 Cookie 已过期。为防止频繁无效访问引发风控已将其挂起。请通过「账号管理」重新登录后恢复任务。`,
+              level: "error"
+            });
+          } else {
+            const nextRun = task.interval_minutes > 0 ? addMinutes(now(), task.interval_minutes) : "";
+            storage.updateScheduledTask(task.id, { status: "失败", nextRunAt: nextRun, lastRunAt: now() });
+            storage.finishTaskLog(logId, "失败", error.message);
+          }
+        } finally {
+          _runningTasks.delete(task.id);
         }
       }
       return { skipped: false, processedTasks };
     } catch (e) {
       console.error("[scheduler] 主循环错误:", e.message);
       return { skipped: false, processedTasks, error: e.message };
-    } finally { running = false; }
+    }
 }
 
 export function startScheduler(rootDir, storage) {

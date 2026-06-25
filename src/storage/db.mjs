@@ -77,6 +77,11 @@ function migrateLegacyBeijingTimestamps(db) {
 }
 
 function ensureColumn(db, table, column, definition) {
+  const ALLOWED_TABLES = new Set(["assets", "notes", "analysis", "followed_accounts",
+    "xhs_accounts", "scheduled_tasks", "task_logs", "comments", "crawl_jobs",
+    "monitor_sources", "notifications", "app_meta", "follow_checks", "accounts"]);
+  if (!ALLOWED_TABLES.has(table)) throw new Error(`[db] 拒绝操作非白名单表: ${table}`);
+  if (!/^[a-z_][a-z0-9_]*$/i.test(column)) throw new Error(`[db] 非法列名: ${column}`);
   const columns = db.prepare(`PRAGMA table_info(${table})`).all().map((item) => item.name);
   if (!columns.includes(column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);

@@ -5,7 +5,6 @@ import urllib.parse
 from xhshow import Xhshow
 
 _client = Xhshow()
-_generated_a1 = Xhshow.generate_a1()
 
 class SignHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
@@ -24,22 +23,23 @@ class SignHandler(http.server.BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length)) if length else {}
         uri = body.get("uri", "")
         cookies = body.get("cookies", {})
-        # 自动补充 a1（签名必需）
-        if "a1" not in cookies or not cookies["a1"]:
-            cookies["a1"] = _generated_a1
         method = body.get("method", "get")
         params = body.get("params", {})
         payload = body.get("payload", {})
         x_rap = body.get("x_rap", False)
+        # 签名格式：xys（默认，旧版）/ xyw（数据类 API 必需）
+        sign_format = body.get("sign_format", "xys")
 
         try:
             if method == "post":
                 headers = _client.sign_headers_post(
-                    uri=uri, cookies=cookies, payload=payload, x_rap=x_rap
+                    uri=uri, cookies=cookies, payload=payload,
+                    x_rap=x_rap, sign_format=sign_format
                 )
             else:
                 headers = _client.sign_headers_get(
-                    uri=uri, cookies=cookies, params=params, x_rap=x_rap
+                    uri=uri, cookies=cookies, params=params,
+                    x_rap=x_rap, sign_format=sign_format
                 )
             result = {"ok": True, "headers": headers}
         except Exception as e:

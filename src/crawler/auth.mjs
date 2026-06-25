@@ -18,36 +18,57 @@ export async function saveXhsCookieFromBrowser(rootDir, options = {}) {
   const cdpPort = options.cdpPort || settings.xhs.cdpPort || 9222;
 
   let browser;
+  let selfLaunched = false; // 区分「连接已有」vs「自行启动」
   try {
     browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
   } catch {
     // 自动启动 CDP Chrome
     const result = await launchCdpChrome(cdpPort, rootDir);
     browser = result.browser;
+    selfLaunched = true;
   }
 
   try {
-    const ctx = browser.contexts()[0] || await browser.newContext();
+    let ctx = browser.contexts()[0];
+    if (!ctx) {
+      for (let i = 0; i < 6; i++) {
+        await sleep(500);
+        ctx = browser.contexts()[0];
+        if (ctx) break;
+      }
+    }
+    if (!ctx) {
+      try { ctx = await browser.newContext(); } catch {
+        throw new Error("未能建立浏览器上下文会话，请确保 Chrome 浏览器已完全启动且处于可用状态。");
+      }
+    }
     const page = await ctx.newPage();
     await page.goto("https://www.xiaohongshu.com/explore", {
       waitUntil: "domcontentloaded", timeout: 45000,
     });
 
-    const url = page.url();
-    if (url.includes("login")) {
-      throw new Error("Chrome 未登录小红书。请在浏览器窗口中登录小红书后再试。");
+    // 登录等待循环，最长 60 秒，若检测到 a1 cookie 且 URL 不含 login，则代表登录成功
+    let isLoggedIn = false;
+    let cookies = [];
+    let cookieString = "";
+    
+    for (let i = 0; i < 60; i++) {
+      const currentUrl = page.url();
+      cookies = await ctx.cookies("https://www.xiaohongshu.com");
+      cookieString = cookies
+        .filter((c) => /xiaohongshu\.com$/.test(c.domain.replace(/^\./, "")))
+        .map((c) => `${c.name}=${c.value}`)
+        .join("; ");
+
+      if (cookieString.includes("a1=") && cookieString.includes("web_session=") && !currentUrl.includes("login")) {
+        isLoggedIn = true;
+        break;
+      }
+      await sleep(1000);
     }
 
-    await sleep(Number(options.waitMs || 3000));
-
-    const cookies = await ctx.cookies("https://www.xiaohongshu.com");
-    const cookieString = cookies
-      .filter((c) => /xiaohongshu\.com$/.test(c.domain.replace(/^\./, "")))
-      .map((c) => `${c.name}=${c.value}`)
-      .join("; ");
-
-    if (!cookieString || !cookieString.includes("a1=")) {
-      throw new Error("未检测到小红书 Cookie。请确保在 Chrome 中已登录小红书。");
+    if (!isLoggedIn) {
+      throw new Error("登录超时或未检测到有效的小红书 Cookie。请确保在打开的浏览器中完成扫码或验证码登录。");
     }
 
     const cookiePath = path.join(rootDir, "data", "xhs-cookie.txt");
@@ -62,7 +83,8 @@ export async function saveXhsCookieFromBrowser(rootDir, options = {}) {
       savedLength: cookieString.length,
     };
   } finally {
-    try { await browser.close(); } catch {}
+    // 仅关闭自行启动的浏览器，不关闭用户已有的外部 Chrome
+    if (selfLaunched) try { await browser.close(); } catch {}
   }
 }
 

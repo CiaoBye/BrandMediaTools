@@ -8,6 +8,19 @@ import {
 import { fetchNoteViaHttp, extractNote } from "./extract.mjs";
 import { fetchUserNotesViaApi, readApiCookie } from "../xhsApiClient.mjs";
 
+export function isOfficialXhsLogo(url) {
+  if (!url) return false;
+  const lower = String(url).toLowerCase();
+  return (
+    lower.includes("favicon") ||
+    lower.includes("logo") ||
+    lower.includes("fe-static") ||
+    lower.includes("fe-platform") ||
+    lower.includes("default_avatar") ||
+    lower.includes("fe-video-qc")
+  );
+}
+
 async function fetchAccountNotesViaHttp(userId, options = {}) {
   const rootDir = options.rootDir || process.cwd();
   const cookie = options.cookie || readXhsCookie(rootDir);
@@ -45,8 +58,25 @@ async function fetchAccountNotesViaHttp(userId, options = {}) {
 
     const pd = state.user?.userPageData;
     const pageData = pd?._value || pd?._rawValue || pd || {};
-    const authorName = pageData.basicInfo?.nickname || pageData.nickname || "";
-    const avatarUrl = pageData.basicInfo?.image || pageData.avatar || pageData.image || "";
+    let authorName = pageData.basicInfo?.nickname || pageData.nickname || "";
+    
+    let avatarUrl = "";
+    const ssrAv = pageData.basicInfo?.image || pageData.avatar || pageData.image || "";
+    if (ssrAv && !isOfficialXhsLogo(ssrAv)) {
+      avatarUrl = ssrAv;
+    } else {
+      const ogMatch = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+      if (ogMatch && !isOfficialXhsLogo(ogMatch[1])) {
+        avatarUrl = ogMatch[1];
+      } else {
+        avatarUrl = ssrAv || (ogMatch ? ogMatch[1] : "");
+      }
+    }
+
+    if (!authorName) {
+      const titleMatch = html.match(/<title>([^<]*)<\/title>/i);
+      if (titleMatch) authorName = titleMatch[1].replace(/ - 小红书.*$/, "").trim();
+    }
 
     const notes = state.user?.notes || state.notes || state.noteResult || [];
     if (!Array.isArray(notes) || !notes.length) return null;
@@ -141,6 +171,14 @@ export async function followAccount(input, options = {}) {
   if (!userId && authorUrl) userId = extractXhsId(authorUrl);
   if (!userId) throw new Error("需要提供 userId 或账号主页链接");
 
+  const useCookie = options.cookie || input.cookie || "";
+  if (useCookie) {
+    try {
+      const { setApiCookie } = await import("../xhsApiClient.mjs");
+      setApiCookie(useCookie);
+    } catch {}
+  }
+
   const knownNoteIds = Array.isArray(input.knownNoteIds) ? input.knownNoteIds : [];
   const knownNoteIdSet = new Set(knownNoteIds.filter(Boolean));
   const isFirstFollow = knownNoteIds.length === 0;
@@ -158,6 +196,13 @@ export async function followAccount(input, options = {}) {
       do {
         apiResult = await fetchUserNotesViaApi(userId, cursor, rootDir);
         if (!apiResult || !apiResult.notes || !apiResult.notes.length) break;
+
+        if (apiResult.notes.length > 0) {
+          const firstNote = apiResult.notes[0];
+          if (!authorName && firstNote.authorName) authorName = firstNote.authorName;
+          if (!avatarUrl && firstNote.authorAvatar) avatarUrl = firstNote.authorAvatar;
+        }
+
         for (const note of apiResult.notes) {
           const nid = note.noteId || "";
           if (!nid || seenNoteIds.has(nid)) continue;
@@ -168,9 +213,13 @@ export async function followAccount(input, options = {}) {
         }
         cursor = apiResult.cursor || "";
       } while (cursor && allNotes.length < maxNotes);
-      log("info", `账号追踪 API: 获取 ${allNotes.length} 条 (userId=${userId?.slice(0, 12)}...)`);
-      const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
-      return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allNotes.length };
+
+      if (allNotes.length > 0) {
+        log("info", `账号追踪 API: 获取 ${allNotes.length} 条 (userId=${userId?.slice(0, 12)}...)`);
+        const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
+        return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allKnownIds.size };
+      }
+      log("warn", "账号追踪 API 未能获取任何笔记，降级 HTTP 路径");
     } catch (e) { log("warn", `账号追踪 API 失败: ${e.message?.slice(0, 60)}`); }
   }
 
@@ -187,11 +236,14 @@ export async function followAccount(input, options = {}) {
   }
 
   if (noteUrls.length) {
+    let successCount = 0;
+    let attemptedNewCount = 0;
     for (const url of noteUrls) {
       const noteId = extractXhsId(url);
       if (!noteId || seenNoteIds.has(noteId)) continue;
       if (!isFirstFollow && knownNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
       seenNoteIds.add(noteId);
+      attemptedNewCount++;
       const httpResult = await fetchNoteViaHttp({ ...input, url }, { ...options, rootDir }).catch(() => null);
       if (httpResult && httpResult.length > 0) {
         const note = { ...httpResult[0], accountId: input.accountId || null, brand: input.brand || "" };
@@ -199,10 +251,26 @@ export async function followAccount(input, options = {}) {
         note.authorId = note.authorId || userId;
         if (!authorName && note.authorName) authorName = note.authorName;
         allNotes.push(note);
+        successCount++;
       }
     }
-    const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
-    return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allKnownIds.size };
+    const shouldFallback =
+      // 首次跟随且 HTTP 路径一条都没有采集到
+      (isFirstFollow && successCount === 0) ||
+      // 有待采集的新笔记，但全部 HTTP 失败
+      (attemptedNewCount > 0 && successCount === 0);
+    if (!shouldFallback) {
+      const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
+      return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allKnownIds.size };
+    } else {
+      for (const url of noteUrls) {
+        const noteId = extractXhsId(url);
+        if (noteId && !knownNoteIdSet.has(noteId)) {
+          seenNoteIds.delete(noteId);
+        }
+      }
+      log("info", `HTTP 快速路径无法成功解析任何新笔记（已尝试 ${attemptedNewCount} 篇），下放至 Playwright 降级流程。`);
+    }
   }
 
   let headless = options.headless;
@@ -235,25 +303,44 @@ export async function followAccount(input, options = {}) {
     }
     await sleep(4000);
 
+    const checkStatus = await page.evaluate(() => {
+      let isCaptcha = false;
+      let isGuest = false;
+      
+      const captchaElements = document.querySelector(".secsdk-captcha-wrapper, #js-secsdk-svg, [class*='captcha'], [id*='captcha'], iframe[src*='captcha']");
+      if (captchaElements) isCaptcha = true;
+      
+      try {
+        const s = window.__INITIAL_STATE__;
+        const userInfo = (s?.user?.userInfo?._value) || (s?.user?.userInfo?._rawValue) || s?.user?.userInfo;
+        const userPageData = (s?.user?.userPageData?._value) || (s?.user?.userPageData?._rawValue) || s?.user?.userPageData;
+        
+        if (userInfo?.guest === true || userPageData?.guest === true || s?.user?.userPageData?._value?.guest === true) {
+          isGuest = true;
+        }
+        if (!userInfo?.nickname && !userPageData?.basicInfo?.nickname) {
+          const loginBox = document.querySelector("[class*='login'], [id*='login']");
+          if (loginBox) isGuest = true;
+        }
+      } catch {
+        isGuest = true;
+      }
+      
+      return { isCaptcha, isGuest };
+    }).catch(() => ({ isCaptcha: false, isGuest: false }));
+
     const currentUrl = page.url();
-    if (currentUrl.includes("captcha") || currentUrl.includes("website-login")) {
+    if (currentUrl.includes("captcha") || currentUrl.includes("website-login") || checkStatus.isCaptcha) {
       if (headless) throw new Error("小红书风控验证码拦截。建议在设置中关闭「无头浏览器」后重试，以便手动处理验证码，或更换 IP/网络环境。");
       throw new Error("验证码等待超时（120 秒）。请稍后重试或更换 IP/网络环境。");
     }
-    if (currentUrl.includes("/login")) {
-      const guestCheck = await page.evaluate(() => {
-        try {
-          const s = window.__INITIAL_STATE__;
-          const val = (s?.user?.userInfo?._value) || (s?.user?.userInfo?._rawValue) || s?.user?.userInfo;
-          return !!val?.guest;
-        } catch { return false; }
-      }).catch(() => false);
-      const hint = guestCheck ? "（Cookie 为访客会话，非登录态）" : "";
+    if (currentUrl.includes("/login") || checkStatus.isGuest) {
+      const hint = checkStatus.isGuest ? "（Cookie 为访客会话，非登录态）" : "";
       throw new Error(`检测到登录页面重定向，Cookie 无效或已过期${hint}。请通过「账号管理」重新扫码登录或保存有效 Cookie。`);
     }
 
     let info = { name: "", avatar: "" };
-    for (let attempt = 0; attempt < 2; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       info = await page.evaluate(() => {
         const title = document.title || "";
         const nameMatch = title.match(/^(.+?)\s*[-–—]\s*小红书/);
@@ -273,16 +360,29 @@ export async function followAccount(input, options = {}) {
         } catch {}
         return {
           name: nameMatch ? nameMatch[1].trim() : (ogTitle && !ogTitle.includes("小红书") ? ogTitle.trim() : (h1?.textContent?.trim() || ssrName || "")),
-          avatar: ogImage || avatarEl || ssrAvatar || ""
+          avatar: (() => {
+            const isOfficial = (u) => {
+              if (!u) return false;
+              const l = String(u).toLowerCase();
+              return l.includes("favicon") || l.includes("logo") || l.includes("fe-static") || l.includes("fe-platform") || l.includes("default_avatar") || l.includes("fe-video-qc");
+            };
+            if (ssrAvatar && !isOfficial(ssrAvatar)) return ssrAvatar;
+            if (avatarEl && !isOfficial(avatarEl)) return avatarEl;
+            if (ogImage && !isOfficial(ogImage)) return ogImage;
+            return ssrAvatar || avatarEl || ogImage || "";
+          })()
         };
       }).catch(() => ({ name: "", avatar: "" }));
       if (info.name) break;
-      await sleep(2000);
+      await sleep(3000); // 等待 JS 渲染完成（最多 3 次×3s）
     }
     if (!authorName) authorName = info.name;
     if (!avatarUrl) avatarUrl = info.avatar;
 
-    noteUrls = await extractAccountLinks(page, { rootDir, maxNotes: 50, scrollPages: 8, scrollDelayMs: 1200 });
+    const settings = envWithSettings(rootDir);
+    const limitNotes = options.maxNotes || settings.xhs.maxAccountNotes || 100;
+    const pages = options.scrollPages || settings.xhs.accountScrollPages || 15;
+    noteUrls = await extractAccountLinks(page, { rootDir, maxNotes: limitNotes, scrollPages: pages });
     if (!noteUrls.length) {
       noteUrls = await page.evaluate(() => {
         try {
@@ -304,7 +404,15 @@ export async function followAccount(input, options = {}) {
     if (!noteUrls.length) {
       try {
         const fallbackCookie = options.cookie || readXhsCookie(rootDir);
-        const resp = await fetch(profileUrl, { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36", Cookie: fallbackCookie } });
+        const fallbackCtrl = new AbortController();
+        const fallbackTimer = setTimeout(() => fallbackCtrl.abort(), 10000);
+        let resp;
+        try {
+          resp = await fetch(profileUrl, {
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36", Cookie: fallbackCookie },
+            signal: fallbackCtrl.signal
+          });
+        } finally { clearTimeout(fallbackTimer); }
         const html = await resp.text();
         const initState = parseInitState(html);
         const userNotes = initState?.user?.notes || initState?.notes || initState?.noteResult || [];
@@ -319,6 +427,21 @@ export async function followAccount(input, options = {}) {
       } catch (e) { console.error("[followAccount] HTTP 直连 profile 页失败:", e.message); }
     }
     if (!noteUrls.length) {
+      const pageAnalysis = await page.evaluate(() => {
+        const noteItems = document.querySelectorAll("a[href*='/explore/'], a[href*='/discovery/item/'], [class*='note-item']");
+        const hasNotes = noteItems.length > 0;
+        const hasBasicProfile = !!(document.querySelector(".nickname, .name, [class*='name'], [class*='avatar']") || document.title.includes("小红书"));
+        const htmlText = document.body ? (document.body.innerText || "") : "";
+        const isExplicitEmpty = htmlText.includes("还没有") || htmlText.includes("暂无") || htmlText.includes("空空") || htmlText.includes("无内容");
+        return { hasNotes, hasBasicProfile, isExplicitEmpty };
+      }).catch(() => ({ hasNotes: false, hasBasicProfile: false, isExplicitEmpty: false }));
+
+      if (!pageAnalysis.hasNotes && !pageAnalysis.isExplicitEmpty) {
+        if (!pageAnalysis.hasBasicProfile) {
+          throw new Error("页面加载失败：未能在页面中检测到小红书账号基本信息，可能被防爬风控拦截或网络加载超时。");
+        }
+        throw new Error("列表加载异常：已获取到账号基本信息，但未能渲染作品列表，且未检测到内容为空的提示，请重试。");
+      }
       return { notes: [], cursor: JSON.stringify(Array.from(knownNoteIdSet)), authorName, avatarUrl, totalFound: knownNoteIdSet.size };
     }
 

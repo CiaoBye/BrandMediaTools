@@ -4,6 +4,7 @@ import { parseBool, envWithSettings } from "./settings.mjs";
 import { extractXhsUrls } from "./xhsSdk.mjs";
 import { crawlXhs } from "./xhsCrawler.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
+import { resolveCookie } from "./xhsAuth.mjs";
 
 export function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -33,7 +34,14 @@ export async function readBody(req) {
   }
   if (!chunks.length) return {};
   const text = Buffer.concat(chunks).toString("utf8");
-  return text ? JSON.parse(text) : {};
+  if (!text || !text.trim()) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    const error = new Error("无效的 JSON 请求体（格式错误）");
+    error.statusCode = 400;
+    throw error;
+  }
 }
 
 function contentType(filePath) {
@@ -46,6 +54,8 @@ function contentType(filePath) {
   if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
   if (ext === ".webp") return "image/webp";
   if (ext === ".mp4") return "video/mp4";
+  if (ext === ".svg") return "image/svg+xml";
+  if (ext === ".ico") return "image/x-icon";
   return "application/octet-stream";
 }
 
@@ -102,6 +112,8 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
   const skipped = [];
   const jobs = [];
 
+  const effectiveCookie = body.cookie || resolveCookie(rootDir, storage);
+
   for (const parsedUrl of parsedUrls) {
     const existing = storage.findNoteBySourceUrl(parsedUrl);
     if (existing && skip) {
@@ -122,9 +134,9 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
           brand: body.brand || "",
           tags: body.tags || [],
           index: body.index || [],
-          cookie: body.cookie || ""
+          cookie: effectiveCookie
         },
-        { rootDir, maxNotes: body.maxNotes, cookie: body.cookie || "", proxy: body.proxy || "", cdpPort }
+        { rootDir, maxNotes: body.maxNotes, cookie: effectiveCookie, proxy: body.proxy || "", cdpPort }
       );
 
       for (const note of notes) {
@@ -154,6 +166,7 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
 // ---- Simple in-memory cache ----
 const cache = new Map();
 const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MAX_CACHE_ENTRIES = 100;
 
 export function getCached(key) {
   const entry = cache.get(key);
@@ -163,6 +176,10 @@ export function getCached(key) {
 }
 
 export function setCached(key, data) {
+  if (cache.size >= MAX_CACHE_ENTRIES) {
+    const oldestKey = cache.keys().next().value;
+    cache.delete(oldestKey);
+  }
   cache.set(key, { data, time: Date.now() });
 }
 
@@ -200,6 +217,8 @@ export async function diagnose(rootDir, storage) {
 
   // 2. HTTP 快速路径检测
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
     const resp = await fetch("https://www.xiaohongshu.com/explore", {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
@@ -207,17 +226,19 @@ export async function diagnose(rootDir, storage) {
         Accept: "text/html",
       },
       redirect: "manual",
-      signal: AbortSignal.timeout(10000),
+      signal: controller.signal,
     });
+    clearTimeout(timer);
     const location = resp.headers.get("location") || "";
     const isCaptcha = (resp.status === 301 || resp.status === 302) && location.includes("captcha");
     const isLogin = (resp.status === 301 || resp.status === 302) && location.includes("login");
+    const isRedirect = (resp.status === 301 || resp.status === 302) && !isCaptcha && !isLogin;
     const isBlocked = resp.status === 200 && (await resp.text()).includes("安全限制");
 
     result.channels.http_fast_path = {
-      status: isCaptcha ? "blocked" : isLogin ? "login_required" : isBlocked ? "blocked" : resp.status === 200 ? "ok" : "unknown",
-      detail: isCaptcha ? "被风控拦截（重定向到验证码页）" : isLogin ? "被重定向到登录页" : isBlocked ? "返回安全限制页面" : resp.status === 200 ? "正常" : `HTTP ${resp.status}`,
-      suggestion: isCaptcha ? "更换 IP 或使用有头浏览器模式" : isLogin ? "Cookie 需要登录态" : isBlocked ? "IP 被限制，请切换网络" : ""
+      status: isCaptcha ? "blocked" : isLogin ? "login_required" : isBlocked ? "blocked" : resp.status === 200 ? "ok" : isRedirect ? "redirect" : "unknown",
+      detail: isCaptcha ? "被风控拦截（重定向到验证码页）" : isLogin ? "被重定向到登录页" : isBlocked ? "返回安全限制页面" : resp.status === 200 ? "正常" : isRedirect ? `HTTP ${resp.status} 重定向到 ${location.slice(0, 60)}` : `HTTP ${resp.status}`,
+      suggestion: isCaptcha ? "更换 IP 或使用有头浏览器模式" : isLogin ? "Cookie 需要登录态" : isBlocked ? "IP 被限制，请切换网络" : isRedirect ? "服务器重定向，可能是 Cookie 未配置或已过期" : ""
     };
     if (isCaptcha || isBlocked) {
       result.captchaDetected = true;

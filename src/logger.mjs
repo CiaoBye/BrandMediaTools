@@ -11,6 +11,7 @@ export class Logger {
     this.logDir = path.join(rootDir, "data", "logs");
     if (!existsSync(this.logDir)) mkdirSync(this.logDir, { recursive: true });
     this.currentFile = path.join(this.logDir, "app.log");
+    this._accumulatedBytes = 0;
     this._ensureFile();
   }
 
@@ -33,10 +34,14 @@ export class Logger {
 
   _write(level, message, data) {
     try {
-      this._ensureFile();
       const time = beijingNow();
       const extra = data ? " " + JSON.stringify(data, null, 0) : "";
       const line = `[${time}] [${level}] ${message}${extra}\n`;
+      this._accumulatedBytes += Buffer.byteLength(line, "utf8");
+      if (this._accumulatedBytes > 100 * 1024) {
+        this._ensureFile();
+        this._accumulatedBytes = 0;
+      }
       appendFileSync(this.currentFile, line, "utf8");
     } catch { /* silently fail */ }
   }

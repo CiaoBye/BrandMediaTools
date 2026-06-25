@@ -9,7 +9,7 @@ await new Promise((resolve) => probe.close(resolve));
 
 const child = spawn(process.execPath, ["--no-warnings", "src/server.mjs"], {
   cwd: process.cwd(),
-  env: { ...process.env, PORT: String(port) },
+  env: { ...process.env, PORT: String(port), NODE_ENV: "test" },
   stdio: ["ignore", "pipe", "pipe"]
 });
 let stdout = "";

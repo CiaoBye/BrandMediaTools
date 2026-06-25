@@ -1,5 +1,35 @@
 # 更新日志
 
+## v1.13 (2026-06-25)
+- **纯视频笔记分类识别修复**：修正 `extract.mjs` 中对纯视频类型（存在视频但 imageList 为空时）的误判，避免其被标记为 `"待复核"`，使其正常归为 `"视频笔记"`。
+- **采集流程网络超时与稳定性加固**：
+  - 移除了 `account.mjs` 中滚动加载提取账号链接时对 `scrollDelayMs` 的 `1200` 毫秒硬编码限制，使其能正确读取 options 与 `settings.json` 中的设置值。
+  - 为 `account.mjs` 中的 HTTP Fallback profile 直连请求加装了由 `AbortController` 控制的 10 秒硬性超时机制，彻底消除网络死锁。
+  - 在 `flow.mjs` 中添加了对无 `xsec_token` 分享链接的前置校验，直接跳过无效的 HTTP SSR 尝试并降级至 Playwright，优化运行效率；补充 Playwright 在启动或导航异常下的 catch 报错日志捕获，使错误不再被隐蔽。
+  - 对笔记提取时哪怕被标记为 `"需人工复核"`（如缺少直接素材），只要包含标题或 ID，也将正确保存并在列表予以保留以便人工审阅。
+- **防崩溃与多浏览器 CDP 交互优化**：
+  - `extract.mjs` 增加了对 `noteData.video` 的类型防御检测（当为布尔值时避免 TypeError 崩溃）。
+  - 在 `auth.mjs` 中对 CDP 远程调试浏览器进行了标识隔离，仅在工具自己启动浏览器时才在退出时自动执行 `browser.close()`，不干扰和误杀用户已有的系统 Chrome 窗口。
+- **系统诊断接口修复**：对诊断工具中的网络请求使用 `AbortController` 代替了在部分旧 Node 运行时不支持的 `AbortSignal.timeout`，防止诊断 API 触发 HTTP 500 崩溃。
+- **账号追踪重试优化**：将获取账号主页的 Vue reactive wrapper 展开及 DOM 等待加载重试时间调整为 `3次 × 3s`。
+
+## v1.12 (2026-06-24)
+- **从 Chrome 提取 Cookie 功能修复**：解决 Chrome 127+ 的 App-Bound Encryption (`v20` 级别加密无法被外部进程直接解密) 以及 Chrome 136+ 强制阻止对默认用户配置目录进行远程调试（CDP）的问题。我们改用应用专有的、持久的配置目录 `.browser-profile/chrome-cdp` 启动调试，并实现交互式 60 秒扫码/短信登录等待轮询机制。如果用户在专用调试浏览器中未登录，可在弹出窗口中完成登录，代码在检测到有效登录态 Cookie 写入后自动保存并关闭浏览器窗口，后续提取可实现秒级全自动检测。
+- **安全凭证拦截与 CSP 冲突修复**：修复在严格的内容安全策略 (CSP) 限制下，因内联脚本被浏览器拦截而导致 `window.__APP_TOKEN__` 无法初始化，从而在写入或获取 Cookie 时触发 `Forbidden: 缺少有效的 App Token` 错误的问题。我们彻底移除内联脚本，改为利用轻量级 `<meta name="app-token">` 标签安全且完全兼容地传递 Token，保证全功能全链路畅通。
+- **UI/UX 视觉完整重构 (新增白天明亮玻璃拟态主题与无缝切换)**：
+  - **白天明亮模式 (Light Mode) 引入**：侧栏导航底部新增一键切换的主题开关，使用 `localStorage` 记忆用户喜好。明亮模式下，底色转为清爽的 Slate-100 (`#f1f5f9`)，卡片升级为半透明白色磨砂玻璃材质（`rgba(255, 255, 255, 0.45)`），高光边缘更清晰。
+  - **色彩系统与背景装饰**：夜间模式下主色调升级为极具高级感的深色夜空背景（`#080b11`），新增紫/粉/蓝三色背景渐发光圆盘（`.bg-glow`）营造太空舱悬浮氛围；面板卡片与侧栏应用磨砂玻璃背景（`rgba(15, 23, 42, 0.45)`）结合 `backdrop-filter: blur(16px)` 及细致的 `rgba(255, 255, 255, 0.08)` 半透明高光描边。
+  - **组件多主题适配**：对 `showConfirm` 确认弹窗进行了完全去硬编码重构，使用 `var(--surface-solid)`、`var(--line)` 等系统 CSS 变量，解决其原先在明亮模式下依然显示暗色背景与字体的色彩违和感。
+  - **字体与排版**：全面引入 Google Fonts，标题采用科技感强的 `Outfit` 字体，正文采用高易读性的 `Inter` 字体。
+  - **微交互与转场动画**：自定义平滑页面转场动效（`slideUpFade`：向上位移、渐显与虚化消除）；卡片悬浮支持轻微浮起（`translateY(-2px)`）和高光扩张；所有按钮使用紫粉渐变或半透明幽灵边框，按压时拥有 `scale(0.97)` 的真实按压物理缩放回弹反馈；骨架屏动画根据主题亮度动态变换明暗微光。
+  - **图表 Chart.js 自适应主题**：在 `app.js` 中全局覆盖配置 Chart.js 的默认 ticks、gridline、border 及 legend label 色彩（深色使用高对比度 `#94a3b8` 和半透明白网格，浅色自动重设为深蓝灰文字与轻量浅网格），并在切换时动态自动重绘当前激活的数据图表面板，保证完美的图表可读性。
+
+## v1.11 (2026-06-24)
+- **安全性加固**：增加 `/files/` 路由路径遍历检测，自动拦截 `..` 相对路径片段；引入启动时随机 `APP_TOKEN` 并要求 API 写入端点校验 Header，防范 CSRF（集成测试中自动绕过）；`xhsAuth.mjs` 改用 `data/.app_secret` 中动态生成的强随机密钥代替硬编码弱密钥；`db.mjs` 中的 `ensureColumn` 增加表名与列名的正则白名单限制防 SQL 注入；导出 CSV 时对字段前置 `'` 符号以防范 Excel 公式注入漏洞。
+- **架构健壮性与性能优化**：`deleteNote` 操作使用 SQLite 显式 `BEGIN/COMMIT` 事务包裹，确保级联删除数据一致性；`batchHydrateNotes` 的 `IN` 条件使用 `500` 长度分块（Chunking）防止 SQLite 参数限制报错；`batchUpdateTags` / `batchUpdateBrand` / `batchSetLibraryType` 改为批量 IN 语句分批更新，减少磁盘写次数；`readBody` 加入 try/catch 块防护，对非法 JSON 请求体返回 400 Bad Request；内存 Map 缓存加入 `MAX_CACHE_ENTRIES = 100` 上限与 LRU 淘汰机制；`scheduler.mjs` 调度锁从全局 `running` 互斥体改进为基于任务 ID 的 `Set<taskId>` 任务级锁，并使用 `try/finally` 块保障释锁安全；AI 大模型 API 增加 `AbortSignal.timeout(60000)` 延时保护限制；日志服务写入增加字节计数器以减少高频 statSync 调用。
+- **前端表现层与交互升级**：自研轻量原生动画 Toast 反馈与 Modal Confirm 确认，全局替换所有原生的 `alert` 和 `confirm` 弹窗；批量删除按钮支持红色高亮，并使用自建 `showConfirm` 的 danger 样式；左侧导航栏中文名称优化（`账号库` -> **`竞品追踪`**，`账号` -> **`登录授权`**）；新增多链接采集时的**前端分步状态条与实时计时器**；引入 Shimmer 渐变闪烁骨架屏加载过渡效果；移动端响应式布局改进，适配 768px 以下宽度的侧栏抽屉、遮罩层及汉堡按钮；封装 `renderEmptyState` 为各板块空数据态展示统一插图。
+- **UI 布局缺陷修复**：修复了自建的移动端汉堡菜单按钮 `.hamburger-btn` 和遮罩层 `.sidebar-overlay` 在桌面端（宽屏视图下）未做 `display: none` 隐藏而渲染成 flex 成员，导致桌面版主内容区被严重挤压变形的问题。
+
 ## v1.10 (2026-06-24)
 - **下载链路修复**：补齐临时文件原子重命名；新增 WebP 转换；PNG 使用正确压缩级别；旧目录迁移仅删除空目录，避免误删同作者其他素材。
 - **报告与统计修复**：修复周报/月报未定义变量导致的 500；按北京时间自然月和等长对比周期计算；内容互动统计兼容多种指标字段。

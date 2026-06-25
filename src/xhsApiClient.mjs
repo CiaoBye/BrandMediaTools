@@ -5,6 +5,8 @@
 import { spawn, execSync } from "node:child_process";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { decryptCookie } from "./xhsAuth.mjs";
 import { getLogger } from "./logger.mjs";
 
 let _pythonPath = "";
@@ -21,10 +23,31 @@ const API_BASE = "https://edith.xiaohongshu.com";
 
 // ---- Cookie 管理 ----
 
-/** 从 data/xhs-cookie.txt 读取 Cookie（自动缓存） */
+/** 从 data/xhs-cookie.txt 或 数据库 读取 Cookie（自动缓存） */
 export function readApiCookie(rootDir) {
   if (_cookieCache) return _cookieCache;
-  const filePath = path.join(rootDir, "data", "xhs-cookie.txt");
+  
+  // 1. 优先尝试从 SQLite 数据库 xhs_accounts 中获取状态为 "有效" 的 Cookie 并解密
+  try {
+    const dbPath = path.join(rootDir || process.cwd(), "data", "app.db");
+    if (existsSync(dbPath)) {
+      const db = new DatabaseSync(dbPath);
+      const row = db.prepare("SELECT cookie_encrypted FROM xhs_accounts WHERE status = '有效' LIMIT 1").get();
+      db.close();
+      if (row && row.cookie_encrypted) {
+        const decrypted = decryptCookie(row.cookie_encrypted, rootDir || process.cwd());
+        if (decrypted && decrypted.length > 50) {
+          _cookieCache = decrypted;
+          return _cookieCache;
+        }
+      }
+    }
+  } catch (err) {
+    // 数据库读取或解密失败，自动降级
+  }
+
+  // 2. 降级回传统文件读取
+  const filePath = path.join(rootDir || process.cwd(), "data", "xhs-cookie.txt");
   if (existsSync(filePath)) {
     _cookieCache = readFileSync(filePath, "utf8").trim();
     if (_cookieCache) console.log(`[xhsApi] 已加载 Cookie (${_cookieCache.split(";").length} 个字段)`);
@@ -33,6 +56,10 @@ export function readApiCookie(rootDir) {
 }
 
 export function clearCookieCache() { _cookieCache = ""; }
+
+export function setApiCookie(cookie) {
+  _cookieCache = cookie ? cookie.trim() : "";
+}
 
 function extractCookies(cookieStr) {
   if (!cookieStr) return {};
@@ -92,9 +119,9 @@ export function stopSignServer() {
 
 // ---- 签名与请求 ----
 
-async function signHeaders(uri, cookies, method = "get", params = {}, payload = {}, xRap = false) {
+async function signHeaders(uri, cookies, method = "get", params = {}, payload = {}, xRap = false, signFormat = "xyw") {
   const start = Date.now();
-  const body = { uri, cookies: extractCookies(cookies), method, params, payload, x_rap: xRap };
+  const body = { uri, cookies: extractCookies(cookies), method, params, payload, x_rap: xRap, sign_format: signFormat };
   const resp = await fetch(`http://127.0.0.1:${SIGN_PORT}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -106,9 +133,9 @@ async function signHeaders(uri, cookies, method = "get", params = {}, payload = 
   return result.headers;
 }
 
-export async function apiGet(apiPath, cookieStr, params = {}, xRap = false) {
+export async function apiGet(apiPath, cookieStr, params = {}, xRap = false, signFormat = "xyw") {
   const start = Date.now();
-  const headers = await signHeaders(apiPath, cookieStr, "get", params, {}, xRap);
+  const headers = await signHeaders(apiPath, cookieStr, "get", params, {}, xRap, signFormat);
   const url = `${API_BASE}${apiPath}?${new URLSearchParams(params)}`;
   const resp = await fetch(url, {
     headers: { ...headers, Cookie: cookieStr, "Content-Type": "application/json" },
@@ -119,9 +146,9 @@ export async function apiGet(apiPath, cookieStr, params = {}, xRap = false) {
   return resp.json();
 }
 
-export async function apiPost(apiPath, cookieStr, payload = {}, xRap = false) {
+export async function apiPost(apiPath, cookieStr, payload = {}, xRap = false, signFormat = "xyw") {
   const start = Date.now();
-  const headers = await signHeaders(apiPath, cookieStr, "post", {}, payload, xRap);
+  const headers = await signHeaders(apiPath, cookieStr, "post", {}, payload, xRap, signFormat);
   const url = `${API_BASE}${apiPath}`;
   const resp = await fetch(url, {
     method: "POST",
@@ -216,6 +243,7 @@ function apiNoteToNote(apiData, sourceUrl = "") {
     description: noteCard.desc || noteCard.display_desc || "",
     authorName: author.nickname || author.user_name || "",
     authorId: author.user_id || "",
+    authorAvatar: author.avatar || author.avatarUrl || author.image || "",
     contentType: video ? "视频笔记" : (livePhotos.length ? "Live图文" : "图文笔记"),
     tags: (noteCard.tag_list || []).map(t => t.name || t.tag_name || "").filter(Boolean),
     publishedAt: noteCard.time || noteCard.create_time || "",

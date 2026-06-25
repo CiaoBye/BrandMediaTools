@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { randomBytes as _randomBytes } from "node:crypto";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,13 +14,14 @@ import { analyzeViral, analyzeTitle, analyzeBody } from "./xhsViralAnalysis.mjs"
 import { getTitleStats, getBodyStats, getEngagementStats, getVisualStyleStats, getMarketingGoalStats, getContentTypeStats, getAuthorStats, getLibraryStats } from "./contentAnalysis.mjs";
 import { generateReport } from "./reportGenerator.mjs";
 import { startQrLogin, checkQrLoginStatus, collectQrCookies, cancelQrLogin } from "./xhsLogin.mjs";
-import { encryptCookie, decryptCookie, readXhsCookie, resolveCookie, checkCookieValid } from "./xhsAuth.mjs";
+import { encryptCookie, decryptCookie, readXhsCookie, resolveCookie, checkCookieValid, cleanCookieString } from "./xhsAuth.mjs";
 import { startScheduler, stopScheduler, runHealthCheckNow } from "./scheduler.mjs";
 import { fmtDate } from "./time.mjs";
 import { Logger, setGlobalLogger } from "./logger.mjs";
 import { sendWebhook } from "./webhook.mjs";
 import { startSignServer, stopSignServer } from "./xhsApiClient.mjs";
 import { exportForEagle } from "./eagleExporter.mjs";
+import { isOfficialXhsLogo } from "./crawler/account.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -42,6 +44,22 @@ process.on("uncaughtException", (error) => {
 });
 
 const ctx = { rootDir, storage, logger };
+
+// 启动时优先从本地文件读取或生成随机 APP_TOKEN，避免重启后前端页面失效（防 CSRF）
+const tokenPath = path.join(rootDir, "data", ".app_token");
+let APP_TOKEN = "";
+try {
+  if (existsSync(tokenPath)) {
+    APP_TOKEN = readFileSync(tokenPath, "utf8").trim();
+  }
+} catch {}
+if (!APP_TOKEN || APP_TOKEN.length !== 32) {
+  APP_TOKEN = _randomBytes(16).toString("hex");
+  try {
+    mkdirSync(path.dirname(tokenPath), { recursive: true });
+    writeFileSync(tokenPath, APP_TOKEN, "utf8");
+  } catch {}
+}
 
 const ROUTES = [];
 
@@ -96,10 +114,23 @@ route("GET", "/api/stats/tag-cloud", (req, res, url) => sendJson(res, 200, stora
 
 route("GET", "/api/stats/content-analysis", (req, res, url) => {
   const range = url.searchParams.get("range") || "";
-  const key = `content-analysis::${range}`;
-  let result = getCached(key);
+  const brand = url.searchParams.get("brand") || "";
+  const libraryType = url.searchParams.get("libraryType") || "";
+  const q = url.searchParams.get("q") || "";
+  const contentType = url.searchParams.get("contentType") || "";
+
+  const hasFilters = brand || libraryType || q || contentType;
+  const key = `content-analysis::${range}::${brand}::${libraryType}::${q}::${contentType}`;
+  
+  let result = hasFilters ? null : getCached(key);
   if (!result) {
-    const notes = storage.listNotes();
+    const filters = {};
+    if (brand) filters.brand = brand;
+    if (libraryType) filters.libraryType = libraryType;
+    if (q) filters.q = q;
+    if (contentType) filters.contentType = contentType;
+
+    const notes = storage.listNotes(filters);
     const filtered = range ? notes.filter((n) => {
       const d = n.collectedAt || "";
       if (!d) return false;
@@ -123,7 +154,9 @@ route("GET", "/api/stats/content-analysis", (req, res, url) => {
       visualStyle: getVisualStyleStats(filtered), marketingGoals: getMarketingGoalStats(filtered),
       contentTypes: getContentTypeStats(filtered), authors: getAuthorStats(filtered), libraries: getLibraryStats(filtered), totalNotes: filtered.length
     };
-    setCached(key, result);
+    if (!hasFilters) {
+      setCached(key, result);
+    }
   }
   sendJson(res, 200, result);
 });
@@ -172,7 +205,10 @@ route("POST", "/api/xhs-accounts", async (req, res) => {
   const body = await readBody(req);
   const data = {};
   if (body.name) data.name = body.name;
-  if (body.cookie) data.cookieEncrypted = encryptCookie(body.cookie, rootDir);
+  if (body.cookie) {
+    const washed = cleanCookieString(body.cookie);
+    data.cookieEncrypted = encryptCookie(washed, rootDir);
+  }
   if (body.status) data.status = body.status;
   sendJson(res, 200, storage.upsertXhsAccount(data));
 });
@@ -192,7 +228,21 @@ route("GET", "/api/xhs-accounts/check-cookie", async (req, res, url) => {
   if (!account || !account.cookie_encrypted) { sendJson(res, 200, { valid: false, reason: "未配置 Cookie" }); return; }
   const cookie = decryptCookie(account.cookie_encrypted, rootDir);
   const check = await checkCookieValid(rootDir, cookie);
-  storage.upsertXhsAccount({ name: account.name, status: check.valid ? "有效" : "无效", lastCheckAt: new Date().toISOString() });
+  
+  const updateData = { 
+    name: account.name, 
+    status: check.valid ? "有效" : "无效", 
+    lastCheckAt: new Date().toISOString() 
+  };
+  
+  if (check.valid && check.cookieUpdated && check.cookieUpdated !== cookie) {
+    updateData.cookieEncrypted = encryptCookie(check.cookieUpdated, rootDir);
+    try {
+      writeFileSync(path.join(rootDir, "data", "xhs-cookie.txt"), check.cookieUpdated, "utf8");
+    } catch {}
+  }
+  
+  storage.upsertXhsAccount(updateData);
   sendJson(res, 200, { ...check, status: check.valid ? "有效" : "无效" });
 });
 route("POST", "/api/xhs-accounts/check-all", async (req, res) => {
@@ -335,7 +385,14 @@ route("POST", "/api/follow/crawl", async (req, res) => {
     const { followAccount } = await import("./xhsCrawler.mjs");
     const followed = storage.getFollowedAccountByUserId(userId);
     let knownNoteIds = [];
-    try { knownNoteIds = JSON.parse(followed?.last_cursor || "[]"); } catch {}
+    try {
+      const parsedIds = JSON.parse(followed?.last_cursor || "[]");
+      if (Array.isArray(parsedIds)) {
+        knownNoteIds = parsedIds.filter(nid => {
+          return !!storage.findNoteBySourceUrl(`https://www.xiaohongshu.com/explore/${nid}`);
+        });
+      }
+    } catch {}
     const result = await followAccount({ userId, authorUrl: body.authorUrl, brand: body.brand, knownNoteIds }, { rootDir, cookie: cookieRaw || "", cdpPort: useCdp ? (settings.xhs.cdpPort || 9222) : 0 });
     let newCount = 0;
     for (const note of result.notes) {
@@ -435,7 +492,11 @@ route("POST", "/api/accounts/detect-name", async (req, res) => {
         avatarUrl = note?.note?.author?.avatar || note?.note?.user?.avatar || "";
       }
       if (!name) { const m = html.match(/<title>([^<]*)<\/title>/i); if (m) name = m[1].replace(/ - 小红书.*$/, "").trim(); }
-      if (!avatarUrl) { const m = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i); if (m) avatarUrl = m[1]; }
+      if (!avatarUrl || isOfficialXhsLogo(avatarUrl)) {
+        const m = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+        if (m && !isOfficialXhsLogo(m[1])) avatarUrl = m[1];
+        else avatarUrl = avatarUrl || (m ? m[1] : "");
+      }
       sendJson(res, 200, { name, avatarUrl }); return;
     }
     let name = "";
@@ -446,36 +507,82 @@ route("POST", "/api/accounts/detect-name", async (req, res) => {
         const page = await context.newPage();
         await page.goto(profileUrl, { waitUntil: "domcontentloaded", timeout: 30000 });
         await sleep(5000);
-        if (!page.url().includes("/login")) {
-          for (let i = 0; i < 5; i++) {
-            await sleep(3000);
-            const info = await page.evaluate(() => {
-              const title = document.title || "";
-              let n = "";
-              const m = title.match(/^(.+?)\s*[-–—]\s*小红书/);
-              if (m) n = m[1].trim();
-              const ogTitle = document.querySelector("meta[property='og:title']")?.content || "";
-              if (!n && ogTitle && !ogTitle.includes("小红书")) n = ogTitle.trim();
-              const h1 = document.querySelector("h1, [class*='name'], [class*='nickname'], [class*='userName'], [class*='username']");
-              if (!n && h1?.textContent?.trim()) n = h1.textContent.trim();
-              try { const s = window.__INITIAL_STATE__; const pd = s?.user?.userPageData; const pageData = pd?._value || pd?._rawValue || pd || {}; if (!n) n = pageData.basicInfo?.nickname || pageData.nickname || pageData.name || ""; const a = pageData.basicInfo?.image || pageData.avatar || pageData.avatar_url || pageData.avatarUrl || pageData.image || ""; return { name: n, avatarUrl: a }; } catch { return { name: n, avatarUrl: "" }; }
-            }).catch(() => ({ name: "", avatarUrl: "" }));
-            name = info.name || name;
-            avatarUrl = info.avatarUrl || avatarUrl;
-            if (name) break;
-          }
+        
+        const checkStatus = await page.evaluate(() => {
+          let isCaptcha = false;
+          let isGuest = false;
+          const captcha = document.querySelector(".secsdk-captcha-wrapper, #js-secsdk-svg, [class*='captcha'], [id*='captcha'], iframe[src*='captcha']");
+          if (captcha) isCaptcha = true;
+          try {
+            const s = window.__INITIAL_STATE__;
+            const userInfo = (s?.user?.userInfo?._value) || (s?.user?.userInfo?._rawValue) || s?.user?.userInfo;
+            const userPageData = (s?.user?.userPageData?._value) || (s?.user?.userPageData?._rawValue) || s?.user?.userPageData;
+            if (userInfo?.guest === true || userPageData?.guest === true || s?.user?.userPageData?._value?.guest === true) isGuest = true;
+            if (!userInfo?.nickname && !userPageData?.basicInfo?.nickname) {
+              const loginBox = document.querySelector("[class*='login'], [id*='login']");
+              if (loginBox) isGuest = true;
+            }
+          } catch { isGuest = true; }
+          return { isCaptcha, isGuest };
+        }).catch(() => ({ isCaptcha: false, isGuest: false }));
+
+        if (page.url().includes("/login") || page.url().includes("captcha") || page.url().includes("website-login") || checkStatus.isCaptcha || checkStatus.isGuest) {
+          throw new Error("Cookie 无效、已过期或遇到了风控验证，无法正常检测账号名。请先去账号管理页面重新扫码登录并更新 Cookie。");
         }
-        if (!avatarUrl) {
-          avatarUrl = await page.evaluate(() => {
-            const og = document.querySelector("meta[property='og:image']")?.content || "";
-            if (og) return og;
-            const img = document.querySelector("img[class*='avatar']");
-            return img?.src || "";
-          }).catch(() => "");
+
+        for (let i = 0; i < 5; i++) {
+          await sleep(3000);
+          const info = await page.evaluate(() => {
+            const title = document.title || "";
+            let n = "";
+            const m = title.match(/^(.+?)\s*[-–—]\s*小红书/);
+            if (m) n = m[1].trim();
+            const ogTitle = document.querySelector("meta[property='og:title']")?.content || "";
+            if (!n && ogTitle && !ogTitle.includes("小红书")) n = ogTitle.trim();
+            const h1 = document.querySelector("h1, [class*='name'], [class*='nickname'], [class*='userName'], [class*='username']");
+            if (!n && h1?.textContent?.trim()) n = h1.textContent.trim();
+            
+            const isOfficial = (u) => {
+              if (!u) return false;
+              const l = String(u).toLowerCase();
+              return l.includes("favicon") || l.includes("logo") || l.includes("fe-static") || l.includes("fe-platform") || l.includes("default_avatar") || l.includes("fe-video-qc");
+            };
+
+            let a = "";
+            try {
+              const s = window.__INITIAL_STATE__;
+              const pd = s?.user?.userPageData;
+              const pageData = pd?._value || pd?._rawValue || pd || {};
+              if (!n) n = pageData.basicInfo?.nickname || pageData.nickname || pageData.name || "";
+              const ssrAv = pageData.basicInfo?.image || pageData.avatar || pageData.avatar_url || pageData.avatarUrl || pageData.image || "";
+              const img = document.querySelector("img[class*='avatar']");
+              const avatarEl = img?.src || "";
+              const ogImage = document.querySelector("meta[property='og:image']")?.content || "";
+              
+              if (ssrAv && !isOfficial(ssrAv)) a = ssrAv;
+              else if (avatarEl && !isOfficial(avatarEl)) a = avatarEl;
+              else if (ogImage && !isOfficial(ogImage)) a = ogImage;
+              else a = ssrAv || avatarEl || ogImage || "";
+            } catch {}
+            return { name: n, avatarUrl: a };
+          }).catch(() => ({ name: "", avatarUrl: "" }));
+          name = info.name || name;
+          if (info.avatarUrl && !isOfficialXhsLogo(info.avatarUrl)) {
+            avatarUrl = info.avatarUrl;
+          }
+          if (name && avatarUrl) break;
         }
       } finally { await context.close(); }
     } catch {
-      try { const resp = await fetch(profileUrl, { headers }); const html = await resp.text(); const m = html.match(/<title>([^<]*)<\/title>/i); if (m) name = m[1].replace(/ - 小红书.*$/, "").trim(); const am = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i); if (am) avatarUrl = am[1]; } catch {}
+      try {
+        const resp = await fetch(profileUrl, { headers });
+        const html = await resp.text();
+        const m = html.match(/<title>([^<]*)<\/title>/i);
+        if (m) name = m[1].replace(/ - 小红书.*$/, "").trim();
+        const am = html.match(/<meta\s+property="og:image"\s+content="([^"]+)"/i);
+        if (am && !isOfficialXhsLogo(am[1])) avatarUrl = am[1];
+        else avatarUrl = avatarUrl || (am ? am[1] : "");
+      } catch {}
     }
     sendJson(res, 200, { name, avatarUrl });
   } catch (error) { sendJson(res, 500, { error: error.message }); }
@@ -617,6 +724,7 @@ route("PUT", "/api/settings", async (req, res) => {
   if (body.notification) Object.assign(merged.notification, body.notification);
   writeFileSync(path.join(rootDir, "data", "settings.json"), JSON.stringify(merged, null, 2), "utf8");
   clearSettingsCache();
+  // 注意：merged 对象含 ai.apiKey 敏感字段，以下日志只打印非敏感字段
   logger.info("设置已保存", { aiProvider: merged.ai?.provider, folderName: merged.download?.folderName });
   sendJson(res, 200, { ok: true });
 });
@@ -637,9 +745,14 @@ route("POST", "/api/settings/ai/test", async (req, res) => {
 });
 route("POST", "/api/settings/xhs-cookie", async (req, res) => {
   const body = await readBody(req);
-  const cookie = String(body.cookie || "").trim();
+  const rawCookie = String(body.cookie || "").trim();
+  const cookie = cleanCookieString(rawCookie);
   if (!cookie || !cookie.includes("=")) { sendJson(res, 400, { error: "请粘贴有效的小红书 Cookie" }); return; }
   writeFileSync(path.join(rootDir, "data", "xhs-cookie.txt"), cookie, "utf8");
+  try {
+    const { clearCookieCache } = await import("./xhsApiClient.mjs");
+    clearCookieCache();
+  } catch {}
   sendJson(res, 200, { ok: true, message: "小红书 Cookie 已保存" });
 });
 route("POST", "/api/settings/xhs-cookie/from-browser", async (req, res) => {
@@ -740,6 +853,15 @@ const server = http.createServer(async (req, res) => {
     res.setHeader("Referrer-Policy", "same-origin");
     res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self'; frame-ancestors 'none'");
     const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
+    // 对非 GET 的 API 请求验证 App Token（防 CSRF）
+    if (process.env.NODE_ENV !== "test" && req.method !== "GET" &&
+        (url.pathname.startsWith("/api/") || url.pathname === "/xhs/detail" || url.pathname === "/xhs/links")) {
+      const token = req.headers["x-app-token"] || "";
+      if (token !== APP_TOKEN) {
+        sendJson(res, 403, { error: "Forbidden: 缺少有效的 App Token" });
+        return;
+      }
+    }
     // 基于 asset ID 的文件访问（避免 URL 路径中的 ../ 被规范化）
     // 必须放在 /api/ 检查之前，否则会被 handleApi 拦截
     const assetFileMatch = url.pathname.match(/^\/api\/assets\/([^/]+)\/file$/);
@@ -762,6 +884,11 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname.startsWith("/files/") || req.url.startsWith("/files/")) {
       const rawPath = (req.url || "").split("?")[0].replace(/^\/files\//, "");
       const decodedPath = decodeURIComponent(rawPath);
+      // 安全预检：拒绝任何包含路径遍历片段的请求
+      if (/\.\.[\\]/.test(decodedPath) || decodedPath.startsWith("..")) {
+        sendText(res, 400, "Bad Request");
+        return;
+      }
       const filePath = path.resolve(rootDir, decodedPath);
       if (!existsSync(filePath)) { sendText(res, 404, "Not found"); return; }
       const allowedRoots = [
@@ -787,7 +914,28 @@ const server = http.createServer(async (req, res) => {
     const requested = url.pathname === "/" ? "index.html" : url.pathname.slice(1);
     const filePath = path.normalize(path.join(publicDir, requested));
     if (filePath !== publicDir && !filePath.startsWith(publicDir + path.sep)) { sendText(res, 403, "Forbidden"); return; }
-    serveFile(res, filePath);
+    if (requested === "index.html") {
+      // 注入 APP_TOKEN 到 index.html，并禁止强缓存以防 Token 发生偏差
+      try {
+        const html = readFileSync(filePath, "utf8").replace(
+          "<head>",
+          `<head><meta name="app-token" content="${APP_TOKEN}">`
+        );
+        const htmlBuf = Buffer.from(html, "utf8");
+        res.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Content-Length": htmlBuf.length,
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          "Pragma": "no-cache",
+          "Expires": "0",
+          "X-Content-Type-Options": "nosniff",
+          "X-Frame-Options": "DENY"
+        });
+        res.end(htmlBuf);
+      } catch { serveFile(res, filePath); }
+    } else {
+      serveFile(res, filePath);
+    }
   } catch (error) { sendJson(res, 500, { error: error.message }); }
 });
 

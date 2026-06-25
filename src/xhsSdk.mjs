@@ -1,7 +1,7 @@
 import path from "node:path";
 import { spawn, execSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync, rmSync } from "node:fs";
 import { cookieStringToPlaywrightCookies, readXhsCookie } from "./xhsAuth.mjs";
 import { envWithSettings } from "./settings.mjs";
 
@@ -436,27 +436,36 @@ async function tryConnectCdp(chromium, cdpPort) {
   } catch { return null; }
 }
 
-function killChrome() {
-  try { execSync("taskkill /f /im chrome.exe >nul 2>&1", { stdio: "ignore" }); } catch {}
-}
-
 export async function launchCdpChrome(cdpPort, rootDir) {
-  // 1. 强杀所有 Chrome
-  killChrome();
-  for (let i = 0; i < 30; i++) {
-    try { execSync("tasklist /fi \"imagename eq chrome.exe\" /nh 2>nul", { stdio: "pipe" }); } catch { break; }
-    await sleep(200);
-  }
-
-  // 2. 启动带调试端口的 Chrome
-  // 用 cmd /c start 启动（start 会自动处理路径引号，且不阻塞）
   const s = rootDir ? envWithSettings(rootDir) : { xhs: {} };
   const chromePath = s.xhs.browserExecutable || findInstalledBrowser() || "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-  const cmdLine = `cmd /c start "" "${chromePath}" --remote-debugging-port=${cdpPort} --no-first-run --no-default-browser-check`;
-  try { execSync(cmdLine, { stdio: "ignore", timeout: 5000 }); } catch {}
-
-  // 3. 等待端口就绪（最多 30 秒）
   const { chromium } = await getPlaywright();
+
+  // 0. 先检测端口是否已被占用（可能已有 Chrome 在运行）
+  for (let i = 0; i < 5; i++) {
+    try {
+      const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
+      const contexts = browser.contexts();
+      console.log(`[CDP] 已有 Chrome 连接至 :${cdpPort}`);
+      return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
+    } catch { await sleep(500); }
+  }
+
+  // 1. 写临时 bat 脚本启动 Chrome（bat 是 Windows 上最可靠的传参方式）
+  const profileDir = path.join(rootDir || process.cwd(), ".browser-profile", "chrome-cdp");
+  mkdirSync(profileDir, { recursive: true });
+  const batPath = path.join(rootDir || process.cwd(), "data", ".cdp-launch.bat");
+  const batContent = `@echo off
+taskkill /f /im "${path.basename(chromePath)}" >nul 2>&1
+ping -n 4 127.0.0.1 >nul
+start "" /min "${chromePath}" --remote-debugging-port=${cdpPort} --remote-allow-origins=* --user-data-dir="${profileDir}" --no-first-run --no-default-browser-check --disable-gpu
+`;
+  writeFileSync(batPath, batContent, "utf8");
+
+  try { execSync(`"${batPath}"`, { stdio: "ignore", timeout: 5000 }); } catch {}
+  setTimeout(() => { try { rmSync(batPath, { force: true }); } catch {} }, 10000);
+
+  // 2. 等待端口就绪（最多 30 秒）
   for (let i = 0; i < 30; i++) {
     await sleep(1000);
     try {
@@ -466,7 +475,7 @@ export async function launchCdpChrome(cdpPort, rootDir) {
       return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
     } catch { /* 等待中 */ }
   }
-  throw new Error(`Chrome 自动启动失败（30s 超时）。请手动关闭所有 Chrome 后运行：\n  "${chromePath}" --remote-debugging-port=${cdpPort}`);
+  throw new Error(`浏览器自动启动失败（30s 超时）。请关闭您的 Chrome 后手动运行以下命令，然后重试提取：\n  "${chromePath}" --remote-debugging-port=${cdpPort} --remote-allow-origins=* --user-data-dir="${profileDir}"`);
 }
 
 export async function createBrowser(rootDir, options = {}) {
@@ -477,18 +486,19 @@ export async function createBrowser(rootDir, options = {}) {
   const cdpPort = options.cdpPort || settings.xhs.cdpPort || 0;
 
   let browser, context, isCdp = false;
+  let cdpConnected = false;
 
   if (useCdp && cdpPort > 0) {
     const cdpResult = await tryConnectCdp(chromium, cdpPort);
     if (cdpResult) {
       browser = cdpResult.browser; context = cdpResult.context; isCdp = true;
+      cdpConnected = true;
     } else {
-      // 自动关闭已有 Chrome + 启动带 CDP 的 Chrome
-      console.log("[CDP] 未检测到调试端口，尝试自动启动 CDP Chrome...");
-      const result = await launchCdpChrome(cdpPort, rootDir);
-      browser = result.browser; context = result.context; isCdp = true;
+      console.log(`[CDP] 未能连接至调试端口 ${cdpPort}。为避免强推您正在使用的 Chrome，将自动降级为常规 Playwright 模式启动。`);
     }
-  } else {
+  }
+
+  if (!cdpConnected) {
     // 常规模式：启动 Playwright 浏览器
     const launchOpts = {
       headless,
@@ -501,12 +511,7 @@ export async function createBrowser(rootDir, options = {}) {
         "--window-size=1440,960"
       ]
     };
-    const proxy = options.proxy || settings.xhs.proxy || "";
-    if (proxy) launchOpts.proxy = { server: proxy };
-
-    const systemChrome = settings.xhs.browserExecutable || findInstalledBrowser();
-    if (systemChrome) launchOpts.executablePath = systemChrome;
-    else { const b = chromium.executablePath(); if (existsSync(b)) launchOpts.executablePath = b; }
+    if (settings.xhs.browserExecutable) launchOpts.executablePath = settings.xhs.browserExecutable;
     browser = await chromium.launch(launchOpts);
 
     const viewports = [
@@ -591,11 +596,12 @@ export function parseInitState(html) {
   const fromScript = html.slice(scriptStart);
   const scriptEnd = fromScript.indexOf("</script>");
   if (scriptEnd < 0) return null;
-  const eqPos = fromScript.indexOf("=");
-  const braceStart = fromScript.indexOf("{", eqPos);
-  const braceEnd = fromScript.lastIndexOf("}");
+  const inScript = fromScript.slice(0, scriptEnd);
+  const eqPos = inScript.indexOf("=");
+  const braceStart = inScript.indexOf("{", eqPos);
+  const braceEnd = inScript.lastIndexOf("}");
   if (braceStart < 0 || braceEnd < 0) return null;
-  let jsonStr = fromScript.slice(braceStart, braceEnd + 1);
+  let jsonStr = inScript.slice(braceStart, braceEnd + 1);
   jsonStr = jsonStr.replace(/\bundefined\b/g, "null").replace(/\bNaN\b/g, "null");
   try { return JSON.parse(jsonStr); } catch { return null; }
 }

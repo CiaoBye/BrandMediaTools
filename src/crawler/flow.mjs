@@ -8,6 +8,15 @@ async function crawlWithFallback(input, options = {}) {
   const rootDir = options.rootDir || process.cwd();
   const shortUrl = input.url?.slice(0, 80) || "";
   log("info", `采集开始: ${shortUrl}`);
+
+  const useCookie = options.cookie || input.cookie || "";
+  if (useCookie) {
+    try {
+      const { setApiCookie } = await import("../xhsApiClient.mjs");
+      setApiCookie(useCookie);
+    } catch {}
+  }
+
   if (!isAccountUrl(input.url)) {
     // 1. API 优先（需 Cookie）
     if (readApiCookie(rootDir)) {
@@ -21,11 +30,21 @@ async function crawlWithFallback(input, options = {}) {
         log("warn", `API 采集无结果，降级 HTTP SSR`);
       }
     }
-    // 2. HTTP SSR 路径（免登录）
-    const httpResult = await fetchNoteViaHttp(input, options);
-    if (httpResult && httpResult.length > 0 && hasUsableAssets(httpResult[0])) {
-      log("info", `HTTP SSR 采集成功: ${httpResult[0].title?.slice(0, 40) || "未命名"}`);
-      return httpResult;
+    // 2. HTTP SSR 路径（仅对含 xsec_token 的 URL 有效，否则直接走 Playwright 效率更高）
+    if (input.url?.includes("xsec_token=")) {
+      const httpResult = await fetchNoteViaHttp(input, options);
+      if (httpResult && httpResult.length > 0) {
+        if (hasUsableAssets(httpResult[0])) {
+          log("info", `HTTP SSR 采集成功: ${httpResult[0].title?.slice(0, 40) || "未命名"}`);
+          return httpResult;
+        }
+        // 有元数据但无素材，保留供用户复核（不降级 Playwright）
+        log("info", `HTTP SSR 解析到元数据但无有效素材，标记待复核: ${httpResult[0].title?.slice(0, 40) || "未命名"}`);
+        return httpResult;
+      }
+      log("info", `HTTP SSR 路径未能解析笔记，降级 Playwright`);
+    } else {
+      log("info", `URL 无 xsec_token，跳过 HTTP SSR 直接走 Playwright`);
     }
   }
 
@@ -53,8 +72,11 @@ async function crawlWithFallback(input, options = {}) {
     }
     if (isAccountUrl(input.url)) return await extractAccountNotes(page, input, options);
     const note = await extractNote(page, input, networkBodies, options.videoPreference || settings.download.videoPreference || "resolution", options.videoMinHeight || settings.download.videoMinHeight || 0);
-    if (note && (hasUsableAssets(note) || note.status !== "需人工复核")) return [note];
-  } catch { /* fall through */ } finally { if (context) try { await context.close(); } catch { console.warn("[crawlWithFallback] context 关闭失败"); } }
+    // 修复：只要有标题或 noteId 就返回（即便无素材，保留供用户复核）
+    if (note && (note.title || note.noteId)) return [note];
+  } catch (e) {
+    log("warn", `Playwright 采集失败: ${e.message?.slice(0, 100)}`);
+  } finally { if (context) try { await context.close(); } catch { console.warn("[crawlWithFallback] context 关闭失败"); } }
 
   return [];
 }

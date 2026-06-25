@@ -177,27 +177,75 @@ async function fetchNoteViaHttp(input, options = {}) {
   const settings = envWithSettings(rootDir);
   const videoPreference = options.videoPreference || settings.download.videoPreference || "resolution";
   const videoMinHeight = options.videoMinHeight || settings.download.videoMinHeight || 0;
-  const cookie = options.cookie || input.cookie || readXhsCookie(rootDir) || "";
+  let cookie = options.cookie || input.cookie || readXhsCookie(rootDir) || "";
 
-  const url = input.url;
+  let url = input.url;
   if (!url) return null;
+
+  // 1. 短链 HEAD 极速预检解析
+  if (url.includes("xhslink.com")) {
+    const headController = new AbortController();
+    const headTimer = setTimeout(() => headController.abort(), 3000);
+    try {
+      const headRes = await fetch(url, {
+        method: "HEAD",
+        redirect: "manual",
+        signal: headController.signal
+      });
+      const location = headRes.headers.get("location");
+      if (location) {
+        // 兼容相对路径重定向（如 /explore/xxxxx）
+        url = location.startsWith("http") ? location : new URL(location, "https://www.xiaohongshu.com").href;
+      }
+    } catch (headErr) {
+      console.warn("[fetchNoteViaHttp] HEAD 短链预解析失败:", headErr.message);
+    } finally {
+      clearTimeout(headTimer);
+    }
+  }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const res = await fetch(url, {
-      headers: {
+    const fetchWithParams = async (useCookie) => {
+      const headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        Cookie: cookie,
         Referer: "https://www.xiaohongshu.com/",
-      },
-      redirect: "follow",
-      signal: controller.signal,
-    });
-    const html = await res.text();
-    if (res.status !== 200) return null;
+      };
+      if (useCookie) headers.Cookie = useCookie;
+      const res = await fetch(url, {
+        headers,
+        redirect: "follow",
+        signal: controller.signal,
+      });
+      const html = await res.text();
+      return { status: res.status, html };
+    };
+
+    let { status: fetchStatus, html } = await fetchWithParams(cookie);
+
+    // 2. 双重 WAF 风控裸奔尝试：若请求被安全限制或登录拦截，且之前带了 Cookie，则尝试清除 Cookie 裸跑一次
+    const isBlocked = (code, text) => {
+      return code !== 200 || text.includes("安全限制") || text.includes("手机号登录");
+    };
+
+    if (isBlocked(fetchStatus, html) && cookie) {
+      console.log("[fetchNoteViaHttp] 携带 Cookie 请求受阻，自动清除 Cookie 尝试免登录裸跑重试...");
+      try {
+        const retryResult = await fetchWithParams("");
+        if (!isBlocked(retryResult.status, retryResult.html)) {
+          fetchStatus = retryResult.status;
+          html = retryResult.html;
+          console.log("[fetchNoteViaHttp] 免登录裸跑重试成功！已成功绕过风控拦截。");
+        }
+      } catch (retryErr) {
+        console.warn("[fetchNoteViaHttp] 免登录裸跑重试发生网络错误:", retryErr.message);
+      }
+    }
+
+    if (fetchStatus !== 200) return null;
     if (html.includes("安全限制") || html.includes("手机号登录") || html.includes("你访问的页面不见了") || html.includes("当前笔记暂时无法浏览")) return null;
 
     const state = parseInitState(html);
@@ -249,10 +297,11 @@ async function fetchNoteViaHttp(input, options = {}) {
         }
       }
     }
-    if (hasVideo) {
-      const streamAssets = extractVideoStreamAssets(noteData.video.media?.stream);
-      if (noteData.video.consumer?.originVideoKey) {
-        const directUrl = `https://sns-video-bd.xhscdn.com/${noteData.video.consumer.originVideoKey}`;
+    if (hasVideo && noteData.video && typeof noteData.video === "object") {
+      const streamAssets = extractVideoStreamAssets(noteData.video.media?.stream || noteData.video.consumerInfo?.stream);
+      const consumer = noteData.video.consumer || noteData.video.consumerInfo || {};
+      if (consumer.originVideoKey) {
+        const directUrl = `https://sns-video-bd.xhscdn.com/${consumer.originVideoKey}`;
         streamAssets.unshift({
           kind: "video", url: directUrl, sourceUrl: directUrl,
           width: null, height: null, resolution: "",
@@ -275,7 +324,8 @@ async function fetchNoteViaHttp(input, options = {}) {
     const metrics = noteData.interactInfo || {};
     const title = noteData.title || "未命名笔记";
     const hasLivePhoto = assets.some((asset) => asset.kind === "livePhoto");
-    const contentType = hasLivePhoto ? "Live图文" : imageList.length && hasVideo ? "视频笔记" : imageList.length ? "图文笔记" : "待复核";
+    // 修复：纯视频笔记（无 imageList）时正确标记为视频笔记，而非待复核
+    const contentType = hasLivePhoto ? "Live图文" : hasVideo ? "视频笔记" : imageList.length ? "图文笔记" : "待复核";
     const status = assets.length ? "已入库" : "需人工复核";
 
     return [{

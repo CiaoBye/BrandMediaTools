@@ -1,0 +1,25 @@
+{
+  "prevRouteData": {},
+  "prevRoute": "Empty",
+  "commentTarget": {},
+  "isImgFullscreen": false,
+  "gotoPage": "",
+  "firstNoteId": "",
+  "autoOpenNote": false,
+  "topCommentId": "",
+  "noteDetailMap": {},
+  "serverRequestInfo": {
+    "state": "success",
+    "errorCode": 0,
+    "errMsg": ""
+  },
+  "volume": 0,
+  "recommendVideoMap": {},
+  "videoFeedType": "note_source",
+  "rate": 1,
+  "currentNoteId": null,
+  "forceScrollToComment": false,
+  "mediaWidth": 450,
+  "noteHeight": 800,
+  "redFirstNoteId": ""
+}

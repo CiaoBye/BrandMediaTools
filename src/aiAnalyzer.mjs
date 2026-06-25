@@ -58,7 +58,8 @@ topicLogic, openingHook, videoStructure, sellingPointExpression, visualStyle, co
         { role: "user", content: prompt }
       ],
       temperature: 0.3
-    })
+    }),
+    signal: AbortSignal.timeout(60000)
   });
 
   if (!response.ok) {

@@ -1,6 +1,6 @@
 {
   "name": "brand-content-intelligence-xhs",
-  "version": "1.10.0",
+  "version": "1.12.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "xhs": "node --no-warnings src/cli.mjs",
     "mcp": "node --no-warnings src/mcpServer.mjs",
     "check": "node tests/syntax-check.mjs",
-    "test": "npm run check && npm run test:core && npm run test:scheduler && npm run test:playwright-fallback && npm run test:mcp && npm run test:eagle && npm run test:download-template && npm run test:clipboard && npm run test:links-merge && npm run test:storage-filter && npm run test:server",
+    "test": "npm run check && npm run test:core && npm run test:scheduler && npm run test:playwright-fallback && npm run test:mcp && npm run test:eagle && npm run test:download-template && npm run test:clipboard && npm run test:links-merge && npm run test:storage-filter && npm run test:cursor-filter && npm run test:should-fallback && npm run test:scheduler-suspend && npm run test:server",
     "test:core": "node --no-warnings tests/core-regression-test.mjs",
     "test:scheduler": "node --no-warnings tests/scheduler-regression-test.mjs",
     "test:playwright-fallback": "node --no-warnings tests/playwright-fallback-test.mjs",
@@ -19,7 +19,10 @@
     "test:download-template": "node --no-warnings tests/download-name-template-test.mjs",
     "test:clipboard": "node --no-warnings tests/clipboard-test.mjs",
     "test:links-merge": "node --no-warnings tests/links-merge-test.mjs",
-    "test:storage-filter": "node --no-warnings tests/storage-filter-test.mjs"
+    "test:storage-filter": "node --no-warnings tests/storage-filter-test.mjs",
+    "test:cursor-filter": "node --no-warnings tests/cursor-physical-filter-test.mjs",
+    "test:should-fallback": "node --no-warnings tests/should-fallback-test.mjs",
+    "test:scheduler-suspend": "node --no-warnings tests/scheduler-suspend-on-cookie-error-test.mjs"
   },
   "dependencies": {
     "chart.js": "^4.4.7",

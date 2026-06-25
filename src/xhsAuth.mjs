@@ -4,7 +4,19 @@ import path from "node:path";
 import { envWithSettings } from "./settings.mjs";
 
 const ALGORITHM = "aes-256-gcm";
-const APP_SECRET = process.env.COOKIE_ENCRYPT_SECRET || "brand-content-intel-xhs-2025";
+const _DEFAULT_SECRET = "brand-content-intel-xhs-2025";
+function _resolveAppSecret() {
+  if (process.env.COOKIE_ENCRYPT_SECRET) return process.env.COOKIE_ENCRYPT_SECRET;
+  try {
+    const secretPath = path.join(process.cwd(), "data", ".app_secret");
+    if (existsSync(secretPath)) {
+      const s = readFileSync(secretPath, "utf8").trim();
+      if (s && s.length >= 32) return s;
+    }
+  } catch {}
+  return _DEFAULT_SECRET;
+}
+const APP_SECRET = _resolveAppSecret();
 
 function deriveKey(rootDir, legacy = false) {
   const machineId = (() => {
@@ -88,15 +100,50 @@ export function cookieStringToPlaywrightCookies(cookieString) {
     .filter(Boolean);
 }
 
+export function cleanCookieString(raw) {
+  if (!raw) return "";
+  let str = raw.trim();
+  if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith("'") && str.endsWith("'"))) {
+    str = str.slice(1, -1).trim();
+  }
+  if (str.startsWith("[") || str.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(str);
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      const parts = items
+        .filter((item) => item && typeof item === "object" && item.name && item.value !== undefined)
+        .map((item) => `${item.name}=${item.value}`);
+      if (parts.length > 0) return parts.join("; ");
+    } catch {}
+  }
+  str = str.replace(/[\r\n]+/g, "; ");
+  return str.split(";").map((part) => part.trim()).filter(Boolean).join("; ");
+}
+
 /** 检查 Cookie 是否有效：HTTP 请求 explore 页，判断是否被重定向到登录页 */
 export async function checkCookieValid(rootDir, cookieRaw) {
-  if (!cookieRaw || !cookieRaw.includes("a1=") || !cookieRaw.includes("web_session")) return { valid: false, reason: "缺少必要 Cookie 字段（a1 / web_session）" };
+  const cleaned = cleanCookieString(cookieRaw);
+  if (!cleaned || !cleaned.includes("web_session")) {
+    return { valid: false, reason: "缺少必要 Cookie 字段（web_session）" };
+  }
   try {
     const resp = await fetch("https://www.xiaohongshu.com/explore", {
       headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        Cookie: cookieRaw, Accept: "text/html",
-        "Accept-Language": "zh-CN,zh;q=0.9"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+        "Sec-Ch-Ua": '"Not(A:Brand";v="99", "Google Chrome";v="134", "Chromium";v="134"',
+        "Sec-Ch-Ua-Mobile": "?0",
+        "Sec-Ch-Ua-Platform": '"Windows"',
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        Referer: "https://www.xiaohongshu.com/",
+        Cookie: cleaned
       },
       redirect: "manual"
     });
@@ -115,11 +162,47 @@ export async function checkCookieValid(rootDir, cookieRaw) {
     const val = ui?._value || ui?._rawValue || ui;
     const nickname = val?.nickname || state?.user?.userInfo?.nickname || "";
     const userId = val?.userId || val?.user_id || "";
-    if (val?.guest === true) return { valid: false, reason: "Cookie 为访客会话，非已登录账号" };
-    if (!nickname && !userId && state?.user?.loggedIn !== true) {
-      return { valid: false, reason: "页面可访问，但未能确认已登录用户" };
+    const loggedIn = state?.user?.loggedIn;
+    if (val?.guest === true || loggedIn === false || (!nickname && !userId)) {
+      return { valid: false, reason: "Cookie 为访客会话或登录态已失效" };
     }
-    return { valid: true, nickname, cookieCount: cookieRaw.split(";").filter((s) => s.includes("=")).length };
+
+    // 自动合并 Set-Cookie 中可能下发的新 a1 等字段以补全 Cookie (自愈)
+    let updatedCookie = cleaned;
+    const setCookies = resp.headers.getSetCookie ? resp.headers.getSetCookie() : (resp.headers.get("set-cookie") ? [resp.headers.get("set-cookie")] : []);
+    if (setCookies.length > 0) {
+      const newCookieParts = [...cleaned.split(";").map(s => s.trim()).filter(Boolean)];
+      let updated = false;
+      for (const sc of setCookies) {
+        if (sc.includes("a1=")) {
+          const match = sc.match(/a1=([^;]+)/);
+          if (match) {
+            const newA1 = match[1];
+            const a1Index = newCookieParts.findIndex(p => p.startsWith("a1="));
+            if (a1Index >= 0) {
+              const val = newCookieParts[a1Index].split("=")[1];
+              if (val !== newA1) {
+                newCookieParts[a1Index] = `a1=${newA1}`;
+                updated = true;
+              }
+            } else {
+              newCookieParts.push(`a1=${newA1}`);
+              updated = true;
+            }
+          }
+        }
+      }
+      if (updated) {
+        updatedCookie = newCookieParts.join("; ");
+      }
+    }
+
+    return { 
+      valid: true, 
+      nickname, 
+      cookieUpdated: updatedCookie,
+      cookieCount: updatedCookie.split(";").filter((s) => s.includes("=")).length 
+    };
   } catch (e) {
     return { valid: false, reason: `检测失败：${e.message}` };
   }
@@ -127,8 +210,6 @@ export async function checkCookieValid(rootDir, cookieRaw) {
 
 /** 从所有可用源解析最佳 Cookie（文件 > 设置 > 环境变量 > DB），storage 可选 */
 export function resolveCookie(rootDir, storage) {
-  const fileCookie = readXhsCookie(rootDir);
-  if (fileCookie && fileCookie.includes("a1=") && fileCookie.length > 50) return fileCookie;
   if (storage) {
     try {
       const accounts = storage.listXhsAccounts();
@@ -139,6 +220,8 @@ export function resolveCookie(rootDir, storage) {
       }
     } catch {}
   }
+  const fileCookie = readXhsCookie(rootDir);
+  if (fileCookie && fileCookie.includes("a1=") && fileCookie.length > 50) return fileCookie;
   return fileCookie || "";
 }
 
