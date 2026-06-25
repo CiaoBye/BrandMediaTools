@@ -51,8 +51,8 @@
     ],
     "extraResources": [
       {
-        "from": "node_modules/playwright",
-        "to": "playwright"
+        "from": ".browser-cache/chromium-1223",
+        "to": "chromium-1223"
       }
     ],
     "win": {

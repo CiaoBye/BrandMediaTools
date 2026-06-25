@@ -1,5 +1,5 @@
 const { app, BrowserWindow } = require("electron");
-const { fork, execSync } = require("child_process");
+const { fork } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 
@@ -8,30 +8,29 @@ let serverProcess;
 
 const PORT = 4173;
 const SERVER_SCRIPT = path.join(__dirname, "..", "src", "server.mjs");
-const PLAYWRIGHT_DIR = path.join(__dirname, "..", "node_modules", "playwright");
 
-function ensurePlaywrightBrowsers() {
-  const browsersJson = path.join(PLAYWRIGHT_DIR, "browsers.json");
-  if (!fs.existsSync(browsersJson)) {
-    console.log("Playwright 未安装，尝试安装浏览器...");
-    try {
-      execSync("npx playwright install chromium", {
-        cwd: path.join(__dirname, ".."),
-        stdio: "inherit",
-        timeout: 120000,
-      });
-      console.log("Playwright 浏览器安装完成");
-    } catch (e) {
-      console.error("Playwright 浏览器安装失败:", e.message);
-    }
-  }
+function getBrowsersPath() {
+  // 打包后: resources/chromium-1223/
+  // 开发时: .browser-cache/chromium-1223/
+  const packed = path.join(process.resourcesPath, "chromium-1223");
+  if (fs.existsSync(packed)) return packed;
+  const dev = path.join(__dirname, "..", ".browser-cache", "chromium-1223");
+  if (fs.existsSync(dev)) return dev;
+  return "";
 }
 
 function startServer() {
   return new Promise((resolve) => {
+    const browserPath = getBrowsersPath();
+    const env = { ...process.env, PORT: String(PORT) };
+    if (browserPath) {
+      env.PLAYWRIGHT_BROWSERS_PATH = browserPath;
+      console.log("[electron] Playwright 浏览器路径:", browserPath);
+    }
+
     serverProcess = fork("node", ["--no-warnings", SERVER_SCRIPT], {
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PORT: String(PORT) },
+      env,
     });
 
     serverProcess.stdout.on("data", (data) => {
@@ -71,7 +70,6 @@ function createWindow() {
 
 app.whenReady().then(async () => {
   console.log("初始化...");
-  ensurePlaywrightBrowsers();
   console.log("正在启动服务器...");
   await startServer();
   console.log("服务器已就绪");
