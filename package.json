@@ -26,6 +26,8 @@
   },
   "dependencies": {
     "chart.js": "^4.4.7",
+    "http-proxy-agent": "^9.1.0",
+    "https-proxy-agent": "^9.1.0",
     "playwright": "^1.54.0",
     "sharp": "^0.33.0"
   },

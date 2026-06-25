@@ -1344,6 +1344,26 @@ $("#extractCookieBtn")?.addEventListener("click", async () => {
   finally { btn.disabled = false; btn.textContent = "从 Chrome 提取 Cookie"; }
 });
 
+$("#testApiBtn")?.addEventListener("click", async () => {
+  const btn = $("#testApiBtn");
+  btn.disabled = true; btn.textContent = "测试中…";
+  try {
+    const r = await api("/api/xhs/test-api", { method: "POST" });
+    if (r.ok) {
+      showToast(`API 测试通过 ✅ 签名正常`, "success");
+    } else {
+      const diag = r.diagnostics || {};
+      const reasons = [];
+      if (!diag.hasA1) reasons.push("❌ 无 a1 Cookie");
+      if (diag.hasA1 && !r.signServerRunning) reasons.push("❌ 签名服务未启动");
+      if (r.apiError) reasons.push(`❌ ${r.apiError}`);
+      if (r.apiResult?.code) reasons.push(`API 返回 code=${r.apiResult.code}`);
+      showToast(`API 状态：${reasons.join("；") || "未知错误"}`, "warn");
+    }
+  } catch (e) { showToast(`请求失败: ${e.message}`, "error"); }
+  finally { btn.disabled = false; btn.textContent = "测试 API"; }
+});
+
 $("#savePastedCookie")?.addEventListener("click", async () => {
   const cookie = $("#pasteCookieInput").value.trim();
   const name = $("#xhsAccountName").value.trim() || "账号-" + Date.now().toString(36);

@@ -1,19 +1,19 @@
-// 小红书 API 签名与 HTTP 请求客户端
-// 通过 Python signserver 获取签名 headers，然后直调 edith.xiaohongshu.com API
-// 一次粘贴 Cookie → 永久免浏览器
-
 import { spawn, execSync } from "node:child_process";
 import path from "node:path";
 import { existsSync, readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { HttpsProxyAgent } from "https-proxy-agent";
+import { HttpProxyAgent } from "http-proxy-agent";
 import { decryptCookie } from "./xhsAuth.mjs";
+import { envWithSettings } from "./settings.mjs";
 import { getLogger } from "./logger.mjs";
 
 let _pythonPath = "";
 let _cookieCache = "";
+let _rateLimitLast = 0;
 
 function log(level, msg, data) {
-  try { const l = getLogger(); if (l) l[level](msg, data); } catch {}
+  try { const l = getLogger(); if (l) l[level]("[xhshow] " + msg, data); } catch {}
   if (level === "warn" || level === "error") console.warn("[xhsApi]", msg);
 }
 
@@ -23,11 +23,8 @@ const API_BASE = "https://edith.xiaohongshu.com";
 
 // ---- Cookie 管理 ----
 
-/** 从 data/xhs-cookie.txt 或 数据库 读取 Cookie（自动缓存） */
 export function readApiCookie(rootDir) {
   if (_cookieCache) return _cookieCache;
-  
-  // 1. 优先尝试从 SQLite 数据库 xhs_accounts 中获取状态为 "有效" 的 Cookie 并解密
   try {
     const dbPath = path.join(rootDir || process.cwd(), "data", "app.db");
     if (existsSync(dbPath)) {
@@ -42,15 +39,11 @@ export function readApiCookie(rootDir) {
         }
       }
     }
-  } catch (err) {
-    // 数据库读取或解密失败，自动降级
-  }
-
-  // 2. 降级回传统文件读取
+  } catch {}
   const filePath = path.join(rootDir || process.cwd(), "data", "xhs-cookie.txt");
   if (existsSync(filePath)) {
     _cookieCache = readFileSync(filePath, "utf8").trim();
-    if (_cookieCache) console.log(`[xhsApi] 已加载 Cookie (${_cookieCache.split(";").length} 个字段)`);
+    if (_cookieCache) log("info", `已加载 Cookie (${_cookieCache.split(";").length} 个字段)`);
   }
   return _cookieCache;
 }
@@ -68,8 +61,34 @@ function extractCookies(cookieStr) {
     const i = p.indexOf("=");
     if (i > 0) c[p.slice(0, i).trim()] = p.slice(i + 1).trim();
   });
-  if (!c.a1) console.warn("[xhsApi] 无 a1 cookie，签名可能失败");
+  if (!c.a1) log("warn", "Cookie 中无 a1 字段");
   return c;
+}
+
+// ---- 速率限制 ----
+
+async function rateLimit() {
+  const minGap = 3000; // 每条请求至少间隔 3 秒
+  const now = Date.now();
+  const wait = minGap - (now - _rateLimitLast);
+  if (wait > 0) await new Promise(r => setTimeout(r, wait));
+  _rateLimitLast = Date.now();
+}
+
+// ---- 代理 ----
+
+function createProxyAgent(urlStr) {
+  const rootDir = process.cwd();
+  const settings = envWithSettings(rootDir);
+  const proxyUrl = settings.xhs?.proxy || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "";
+  if (!proxyUrl) return null;
+  const isHttps = urlStr.startsWith("https");
+  try {
+    return isHttps ? new HttpsProxyAgent(proxyUrl) : new HttpProxyAgent(proxyUrl);
+  } catch {
+    log("warn", `代理创建失败: ${proxyUrl}`);
+    return null;
+  }
 }
 
 // ---- 签名服务管理 ----
@@ -99,14 +118,14 @@ export async function startSignServer(rootDir) {
   });
   _signServer.stderr.on("data", (d) => {
     const msg = d.toString().trim();
-    if (msg) log("info", "[signserver] " + msg);
+    if (msg) log("info", msg);
   });
-  _signServer.on("exit", (code) => { _signServer = null; if (code) console.warn(`[signserver] exited ${code}`); });
+  _signServer.on("exit", (code) => { _signServer = null; if (code) log("warn", `signserver exited ${code}`); });
   for (let i = 0; i < 20; i++) {
     await new Promise((r) => setTimeout(r, 500));
     try {
       const r = await fetch(`http://127.0.0.1:${SIGN_PORT}/status`);
-      if (r.ok) { console.log("[signserver] ready"); return; }
+      if (r.ok) { log("info", "signserver ready"); return; }
     } catch {}
   }
   throw new Error("signserver 启动超时");
@@ -114,13 +133,11 @@ export async function startSignServer(rootDir) {
 
 export function stopSignServer() {
   if (_signServer) { try { _signServer.kill(); } catch {} _signServer = null; }
-  log("info", "signserver 已停止");
 }
 
-// ---- 签名与请求 ----
+// ---- 签名与请求（含重试 + 代理） ----
 
 async function signHeaders(uri, cookies, method = "get", params = {}, payload = {}, xRap = false, signFormat = "xyw") {
-  const start = Date.now();
   const body = { uri, cookies: extractCookies(cookies), method, params, payload, x_rap: xRap, sign_format: signFormat };
   const resp = await fetch(`http://127.0.0.1:${SIGN_PORT}`, {
     method: "POST",
@@ -129,35 +146,57 @@ async function signHeaders(uri, cookies, method = "get", params = {}, payload = 
   });
   const result = await resp.json();
   if (!result.ok) throw new Error(`签名失败: ${result.error}`);
-  log("info", `签名 ${uri.slice(0, 40)} (${Date.now() - start}ms)`);
   return result.headers;
 }
 
+async function proxiedFetch(url, options = {}, retries = 3) {
+  const agent = createProxyAgent(url);
+  if (agent) options.dispatcher = agent;
+
+  let lastErr;
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      await rateLimit();
+      const resp = await fetch(url, options);
+      // 461 = 风控拦截，不重试
+      if (resp.status === 461) {
+        const body = await resp.text().catch(() => "");
+        log("error", `风控拦截 461: ${url.slice(0, 60)} — ${body.slice(0, 100)}`);
+        return { status: 461, ok: false, data: null, body };
+      }
+      return resp;
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) {
+        const delay = Math.min(1000 * Math.pow(2, attempt), 8000);
+        log("warn", `请求失败 (${attempt}/${retries}): ${err.message?.slice(0, 60)}, ${delay}ms 后重试`);
+        await new Promise(r => setTimeout(r, delay));
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export async function apiGet(apiPath, cookieStr, params = {}, xRap = false, signFormat = "xyw") {
-  const start = Date.now();
   const headers = await signHeaders(apiPath, cookieStr, "get", params, {}, xRap, signFormat);
-  const url = `${API_BASE}${apiPath}?${new URLSearchParams(params)}`;
-  const resp = await fetch(url, {
-    headers: { ...headers, Cookie: cookieStr, "Content-Type": "application/json" },
+  const qs = new URLSearchParams(params).toString();
+  const url = `${API_BASE}${apiPath}${qs ? "?" + qs : ""}`;
+  const resp = await proxiedFetch(url, {
+    headers: { ...headers, Cookie: cookieStr, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36", "Content-Type": "application/json" },
   });
-  const ms = Date.now() - start;
-  const ok = resp.ok ? "OK" : `${resp.status}`;
-  log("info", `GET ${apiPath.slice(0, 40)} ${ok} (${ms}ms)`);
+  if (resp.status === 461) return { success: false, code: 461, msg: "风控拦截" };
   return resp.json();
 }
 
 export async function apiPost(apiPath, cookieStr, payload = {}, xRap = false, signFormat = "xyw") {
-  const start = Date.now();
   const headers = await signHeaders(apiPath, cookieStr, "post", {}, payload, xRap, signFormat);
   const url = `${API_BASE}${apiPath}`;
-  const resp = await fetch(url, {
+  const resp = await proxiedFetch(url, {
     method: "POST",
-    headers: { ...headers, Cookie: cookieStr, "Content-Type": "application/json" },
+    headers: { ...headers, Cookie: cookieStr, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36", "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const ms = Date.now() - start;
-  const ok = resp.ok ? "OK" : `${resp.status}`;
-  log("info", `POST ${apiPath.slice(0, 40)} ${ok} (${ms}ms)`);
+  if (resp.status === 461) return { success: false, code: 461, msg: "风控拦截" };
   return resp.json();
 }
 
@@ -191,7 +230,6 @@ export async function fetchUserInfo(userId, cookieStr) {
 
 // ---- API 响应 → 笔记格式转换 ----
 
-/** 将 edith API 的 feed 响应转成我们的笔记格式 */
 function apiNoteToNote(apiData, sourceUrl = "") {
   if (!apiData) return null;
   const items = apiData.items || (apiData.data?.items) || [];
@@ -201,7 +239,6 @@ function apiNoteToNote(apiData, sourceUrl = "") {
   const imageList = noteCard.image_list || noteCard.cover?.image_list || [];
   const video = noteCard.video || noteCard.media?.video || null;
 
-  // 图片素材
   const images = imageList.map((img, i) => ({
     kind: "image", sourceUrl: img.info_list?.[0]?.image_scene?.url || img.url_default || "",
     url: img.info_list?.[0]?.image_scene?.url || img.url_default || "",
@@ -210,7 +247,6 @@ function apiNoteToNote(apiData, sourceUrl = "") {
     fileId: img.trace_id || "", traceId: img.trace_id || "",
   }));
 
-  // 视频素材
   const videos = video ? [{
     kind: "video", sourceUrl: video.media?.stream?.master_url || video.media?.stream?.[0]?.master_url || "",
     url: video.media?.stream?.master_url || video.media?.stream?.[0]?.master_url || "",
@@ -220,7 +256,6 @@ function apiNoteToNote(apiData, sourceUrl = "") {
     source: "api:feed", fileId: video.trace_id || "", traceId: video.trace_id || "",
   }] : [];
 
-  // LivePhoto
   const livePhotos = [];
   for (const img of imageList) {
     if (img.livePhoto && img.livePhoto_width && img.livePhoto_height) {
@@ -234,7 +269,6 @@ function apiNoteToNote(apiData, sourceUrl = "") {
   }
 
   const author = noteCard.user || item.user || {};
-  const tagList = noteCard.tag_list || [];
 
   return {
     sourceUrl: sourceUrl || `https://www.xiaohongshu.com/explore/${noteCard.note_id}`,
@@ -259,7 +293,6 @@ function apiNoteToNote(apiData, sourceUrl = "") {
   };
 }
 
-/** 将 edith API 的 user_posted 响应转成笔记列表 */
 function apiItemsToNotes(apiData, authorName = "") {
   if (!apiData?.data?.items) return { notes: [], cursor: apiData.data?.cursor || "" };
   const items = apiData.data.items;
@@ -271,12 +304,8 @@ function apiItemsToNotes(apiData, authorName = "") {
   return { notes, cursor: apiData.data.cursor || "" };
 }
 
-// ---- 业务集成函数（供 xhsCrawler 调用） ----
+// ---- 业务集成函数 ----
 
-/**
- * 通过 xhshow API 采集笔记详情
- * 返回格式与 fetchNoteViaHttp 兼容（notes 数组）
- */
 export async function crawlNoteViaApi(sourceNoteId, sourceUrl = "", rootDir = "") {
   const cookie = readApiCookie(rootDir || process.cwd());
   if (!cookie) return null;
@@ -287,31 +316,27 @@ export async function crawlNoteViaApi(sourceNoteId, sourceUrl = "", rootDir = ""
     const note = apiNoteToNote(result, sourceUrl);
     return note ? [note] : null;
   } catch (e) {
-    console.warn("[crawlNoteViaApi] 失败:", e.message);
+    log("warn", `crawlNoteViaApi 失败: ${e.message?.slice(0, 80)}`);
     return null;
   }
 }
 
-/**
- * 通过 xhshow API 获取用户笔记列表
- * 返回格式与 followAccount 兼容
- */
 export async function fetchUserNotesViaApi(userId, cursor = "", rootDir = "") {
   const cookie = readApiCookie(rootDir || process.cwd());
   if (!cookie) return null;
   try {
     const result = await fetchUserPosted(userId, cursor, 50, cookie);
     if (!result.success) {
-      log("warn", `用户笔记列表 API 失败: ${result.msg || result.code}`);
+      log("warn", `用户笔记列表失败: ${result.msg || result.code}`);
       return null;
     }
     const items = result.data?.items || [];
     if (!items.length) {
-      log("info", `用户笔记列表: 无更多笔记 (userId=${userId?.slice(0, 12)} cursor=${cursor?.slice(0, 16) || "初始"})`);
+      log("info", `用户笔记列表: 无更多笔记`);
       return { notes: [], cursor: "" };
     }
     const notes = apiItemsToNotes(result).notes;
-    log("info", `用户笔记列表: ${items.length} 条 (userId=${userId?.slice(0, 12)} cursor=${cursor?.slice(0, 16) || "初始"} → ${result.data?.cursor?.slice(0, 16) || "终"})`);
+    log("info", `用户笔记列表: ${items.length} 条`);
     return { notes, cursor: result.data.cursor || "" };
   } catch (e) {
     log("warn", `用户笔记列表失败: ${e.message?.slice(0, 80)}`);
@@ -319,9 +344,6 @@ export async function fetchUserNotesViaApi(userId, cursor = "", rootDir = "") {
   }
 }
 
-/**
- * 通过 xhshow API 搜索
- */
 export async function searchViaApi(keyword, cursor = "", rootDir = "") {
   const cookie = readApiCookie(rootDir || process.cwd());
   if (!cookie) return null;
@@ -332,7 +354,7 @@ export async function searchViaApi(keyword, cursor = "", rootDir = "") {
     if (!items.length) return { items: [], cursor: "" };
     return { items, cursor: result.data.cursor || "" };
   } catch (e) {
-    console.warn("[searchViaApi] 失败:", e.message);
+    log("warn", `searchViaApi 失败: ${e.message?.slice(0, 80)}`);
     return null;
   }
 }

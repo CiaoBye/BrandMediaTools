@@ -767,11 +767,32 @@ route("POST", "/api/settings/xhs-cookie/from-browser", async (req, res) => {
 route("POST", "/api/xhs/test-api", async (req, res) => {
   try {
     const cookieRaw = await (await import("./xhsAuth.mjs")).readXhsCookie(rootDir);
-    if (!cookieRaw) { sendJson(res, 400, { error: "无已保存的 Cookie。请先通过「账号管理」→「从 Chrome 提取 Cookie」获取登录态。" }); return; }
-    const { fetchUserInfo, startSignServer } = await import("./xhsApiClient.mjs");
-    await startSignServer(rootDir).catch(() => {});
-    const result = await fetchUserInfo("", cookieRaw);
-    sendJson(res, 200, { ok: result.success === true, data: result.data || result.msg });
+    const diagnostics = { hasCookie: false, cookieFields: 0, hasA1: false, hasWebSession: false, signServerRunning: false };
+
+    if (cookieRaw) {
+      diagnostics.hasCookie = true;
+      diagnostics.cookieFields = cookieRaw.split(";").length;
+      diagnostics.hasA1 = cookieRaw.includes("a1=");
+      diagnostics.hasWebSession = cookieRaw.includes("web_session=");
+    }
+
+    const { startSignServer } = await import("./xhsApiClient.mjs");
+    try { await startSignServer(rootDir); diagnostics.signServerRunning = true; } catch {}
+
+    if (!diagnostics.hasA1) {
+      sendJson(res, 200, { ok: false, diagnostics, error: "Cookie 缺少 a1 字段" });
+      return;
+    }
+
+    let apiResult = null;
+    let apiError = null;
+    try {
+      const { fetchUserInfo } = await import("./xhsApiClient.mjs");
+      const result = await fetchUserInfo("", cookieRaw);
+      apiResult = { success: result.success, msg: result.msg, code: result.code };
+    } catch (e) { apiError = e.message; }
+
+    sendJson(res, 200, { ok: apiResult?.success === true, diagnostics, apiResult, apiError });
   } catch (error) { sendJson(res, 500, { error: error.message }); }
 });
 
