@@ -3,8 +3,11 @@
   "version": "1.12.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "start": "node --no-warnings src/server.mjs",
+    "electron": "electron .",
+    "pack": "electron-builder --win --x64",
     "xhs": "node --no-warnings src/cli.mjs",
     "mcp": "node --no-warnings src/mcpServer.mjs",
     "check": "node tests/syntax-check.mjs",
@@ -33,7 +36,40 @@
     "playwright": "^1.54.0",
     "sharp": "^0.33.0"
   },
+  "build": {
+    "appId": "com.brandmedia.tool",
+    "productName": "品牌内容情报工具",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "electron/**/*",
+      "src/**/*.mjs",
+      "public/**/*",
+      "package.json",
+      "node_modules/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/playwright",
+        "to": "playwright"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
+  },
   "engines": {
     "node": ">=24"
+  },
+  "devDependencies": {
+    "electron": "^42.5.0",
+    "electron-builder": "^26.15.3"
   }
 }
