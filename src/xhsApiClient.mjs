@@ -29,13 +29,15 @@ export function readApiCookie(rootDir) {
     const dbPath = path.join(rootDir || process.cwd(), "data", "app.db");
     if (existsSync(dbPath)) {
       const db = new DatabaseSync(dbPath);
-      const row = db.prepare("SELECT cookie_encrypted FROM xhs_accounts WHERE status = '有效' LIMIT 1").get();
+      const rows = db.prepare("SELECT cookie_encrypted, last_check_at FROM xhs_accounts WHERE status = '有效' ORDER BY last_check_at DESC").all();
       db.close();
-      if (row && row.cookie_encrypted) {
-        const decrypted = decryptCookie(row.cookie_encrypted, rootDir || process.cwd());
-        if (decrypted && decrypted.length > 50) {
-          _cookieCache = decrypted;
-          return _cookieCache;
+      for (const row of rows) {
+        if (row && row.cookie_encrypted) {
+          const decrypted = decryptCookie(row.cookie_encrypted, rootDir || process.cwd());
+          if (decrypted && decrypted.length > 50 && decrypted.includes("a1=")) {
+            _cookieCache = decrypted;
+            return _cookieCache;
+          }
         }
       }
     }

@@ -120,7 +120,7 @@ export function cleanCookieString(raw) {
   return str.split(";").map((part) => part.trim()).filter(Boolean).join("; ");
 }
 
-/** 检查 Cookie 是否有效：HTTP 请求 explore 页，判断是否被重定向到登录页 */
+/** 检查 Cookie 是否有效：轻量级检测，只检查 HTTP 状态和重定向 */
 export async function checkCookieValid(rootDir, cookieRaw) {
   const cleaned = cleanCookieString(cookieRaw);
   if (!cleaned || !cleaned.includes("web_session")) {
@@ -130,93 +130,55 @@ export async function checkCookieValid(rootDir, cookieRaw) {
     const resp = await fetch("https://www.xiaohongshu.com/explore", {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        "Cache-Control": "no-cache",
-        Pragma: "no-cache",
-        "Sec-Ch-Ua": '"Not(A:Brand";v="99", "Google Chrome";v="134", "Chromium";v="134"',
-        "Sec-Ch-Ua-Mobile": "?0",
-        "Sec-Ch-Ua-Platform": '"Windows"',
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "none",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        Referer: "https://www.xiaohongshu.com/",
-        Cookie: cleaned
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        Cookie: cleaned,
       },
-      redirect: "manual"
+      redirect: "manual",
     });
     if (resp.status === 302 || resp.status === 301) {
       const location = resp.headers.get("location") || "";
       if (location.includes("/login")) return { valid: false, reason: "Cookie 已过期，被重定向到登录页" };
     }
-    const html = await resp.text();
-    if (html.includes("手机号登录") || html.includes("登录小红书") || html.includes("你访问的页面不见了")) {
-      return { valid: false, reason: "Cookie 无效（页面返回登录态）" };
-    }
-    // 尝试从 __INITIAL_STATE__ 提取用户昵称
-    const { parseInitState } = await import("./xhsSdk.mjs");
-    const state = parseInitState(html);
-    const ui = state?.user?.userInfo;
-    const val = ui?._value || ui?._rawValue || ui;
-    const nickname = val?.nickname || state?.user?.userInfo?.nickname || "";
-    const userId = val?.userId || val?.user_id || "";
-    const loggedIn = state?.user?.loggedIn;
-    if (val?.guest === true || loggedIn === false || (!nickname && !userId)) {
-      return { valid: false, reason: "Cookie 为访客会话或登录态已失效" };
-    }
-
-    // 自动合并 Set-Cookie 中可能下发的新 a1 等字段以补全 Cookie (自愈)
-    let updatedCookie = cleaned;
-    const setCookies = resp.headers.getSetCookie ? resp.headers.getSetCookie() : (resp.headers.get("set-cookie") ? [resp.headers.get("set-cookie")] : []);
-    if (setCookies.length > 0) {
-      const newCookieParts = [...cleaned.split(";").map(s => s.trim()).filter(Boolean)];
-      let updated = false;
-      for (const sc of setCookies) {
-        if (sc.includes("a1=")) {
-          const match = sc.match(/a1=([^;]+)/);
-          if (match) {
-            const newA1 = match[1];
-            const a1Index = newCookieParts.findIndex(p => p.startsWith("a1="));
-            if (a1Index >= 0) {
-              const val = newCookieParts[a1Index].split("=")[1];
-              if (val !== newA1) {
-                newCookieParts[a1Index] = `a1=${newA1}`;
-                updated = true;
-              }
-            } else {
-              newCookieParts.push(`a1=${newA1}`);
-              updated = true;
+    if (resp.status === 200) {
+      // 抽取 Set-Cookie 中 a1 更新
+      let updatedCookie = cleaned;
+      const setCookies = resp.headers.get("set-cookie") ? [resp.headers.get("set-cookie")] : [];
+      if (setCookies.length > 0) {
+        const parts = cleaned.split(";").map(s => s.trim()).filter(Boolean);
+        let changed = false;
+        for (const sc of setCookies) {
+          const m = sc.match(/a1=([^;]+)/);
+          if (m) {
+            const idx = parts.findIndex(p => p.startsWith("a1="));
+            if (idx >= 0 && parts[idx].split("=")[1] !== m[1]) {
+              parts[idx] = `a1=${m[1]}`;
+              changed = true;
             }
           }
         }
+        if (changed) updatedCookie = parts.join("; ");
       }
-      if (updated) {
-        updatedCookie = newCookieParts.join("; ");
-      }
+      return { valid: true, cookieUpdated: updatedCookie, cookieCount: cleaned.split(";").length };
     }
-
-    return { 
-      valid: true, 
-      nickname, 
-      cookieUpdated: updatedCookie,
-      cookieCount: updatedCookie.split(";").filter((s) => s.includes("=")).length 
-    };
+    return { valid: false, reason: `意外状态码 ${resp.status}` };
   } catch (e) {
     return { valid: false, reason: `检测失败：${e.message}` };
   }
 }
 
-/** 从所有可用源解析最佳 Cookie（文件 > 设置 > 环境变量 > DB），storage 可选 */
+/** 从所有可用源解析最佳 Cookie（DB 最近有效 > 文件） */
 export function resolveCookie(rootDir, storage) {
   if (storage) {
     try {
       const accounts = storage.listXhsAccounts();
-      const valid = accounts.find((a) => a.status === "有效");
-      if (valid?.cookie_encrypted) {
-        const decrypted = decryptCookie(valid.cookie_encrypted, rootDir);
-        if (decrypted && decrypted.length > 50) return decrypted;
+      const valid = accounts
+        .filter((a) => a.status === "有效")
+        .sort((a, b) => new Date(b.last_check_at || 0) - new Date(a.last_check_at || 0));
+      for (const account of valid) {
+        if (account.cookie_encrypted) {
+          const decrypted = decryptCookie(account.cookie_encrypted, rootDir);
+          if (decrypted && decrypted.length > 50 && decrypted.includes("a1=")) return decrypted;
+        }
       }
     } catch {}
   }
