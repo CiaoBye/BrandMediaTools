@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { sleep, createBrowser } from "./xhsSdk.mjs";
+import { sleep, createBrowser, getGlobalContext, initGlobalBrowser } from "./xhsSdk.mjs";
 
 const sessions = new Map();
 
@@ -10,7 +10,14 @@ export async function startQrLogin(rootDir, accountName = "default", options = {
     sessions.delete(accountName);
   }
 
-  const { browser, context } = await createBrowser(rootDir, { headless: false, proxy: options.proxy });
+  // 优先使用全局持久浏览器（头模式或无头模式均可扫码）
+  let context = getGlobalContext();
+  let browser = null;
+  if (!context) {
+    const result = await createBrowser(rootDir, { headless: false, proxy: options.proxy });
+    browser = result.browser;
+    context = result.context;
+  }
 
   const page = await context.newPage();
   await page.goto("https://www.xiaohongshu.com/login", { waitUntil: "domcontentloaded", timeout: 45000 });
@@ -37,7 +44,7 @@ export async function startQrLogin(rootDir, accountName = "default", options = {
     } catch {}
   }
   if (!qrBase64) {
-    try { await browser.close(); } catch {}
+    if (browser) try { await browser.close(); } catch {}
     throw new Error("登录页已打开，但未识别到二维码。请检查网络后重试。");
   }
 
@@ -151,7 +158,7 @@ export async function collectQrCookies(accountName) {
     } catch {}
     return { ok: true, cookieString, cookieCount: cookies.length, nickname: nickname || accountName };
   } finally {
-    try { await session.browser.close(); } catch {}
+    if (session.browser) try { await session.browser.close(); } catch {}
     sessions.delete(accountName);
   }
 }
@@ -159,14 +166,14 @@ export async function collectQrCookies(accountName) {
 export function cancelQrLogin(accountName) {
   const session = sessions.get(accountName);
   if (session) {
-    session.browser.close().catch(() => {});
+    if (session.browser) session.browser.close().catch(() => {});
     sessions.delete(accountName);
   }
 }
 
 export function closeAllSessions() {
   for (const [, session] of sessions) {
-    session.browser.close().catch(() => {});
+    if (session.browser) session.browser.close().catch(() => {});
   }
   sessions.clear();
 }

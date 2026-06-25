@@ -19,7 +19,7 @@ export const aiPresets = [
 
 export const defaultSettings = {
   xhs: {
-    headless: false,
+    headless: true,
     maxAccountNotes: 100,
     accountScrollPages: 8,
     accountScrollDelayMs: 1200,

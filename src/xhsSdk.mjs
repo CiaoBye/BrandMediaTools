@@ -440,7 +440,7 @@ export async function initGlobalBrowser(rootDir) {
   const profileDir = path.join(rootDir || process.cwd(), ".browser-profile", "tool-profile");
   mkdirSync(profileDir, { recursive: true });
   _globalContext = await chromium.launchPersistentContext(profileDir, {
-    headless: false,
+    headless: true,
     args: [
       "--disable-quic", "--no-first-run", "--no-default-browser-check",
       "--disable-component-update", "--disable-sync",
