@@ -428,6 +428,47 @@ if (navigator.connection) {
 }
 `;
 
+// ===== 全局持久浏览器（单实例，编译码+抓取共用） =====
+let _globalContext = null;
+let _globalBrowser = null;
+let _globalPlaywright = null;
+
+export async function initGlobalBrowser(rootDir) {
+  if (_globalContext) return;
+  const { chromium, firefox } = await getPlaywright();
+  _globalPlaywright = chromium;
+  const profileDir = path.join(rootDir || process.cwd(), ".browser-profile", "tool-profile");
+  mkdirSync(profileDir, { recursive: true });
+  _globalContext = await chromium.launchPersistentContext(profileDir, {
+    headless: false,
+    args: [
+      "--disable-quic", "--no-first-run", "--no-default-browser-check",
+      "--disable-component-update", "--disable-sync",
+      "--disable-background-networking",
+      "--disable-features=ChromeWhatsNewUI",
+      "--disable-blink-features=AutomationControlled",
+    ],
+    viewport: { width: 1440, height: 900 },
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    locale: "zh-CN", timezoneId: "Asia/Shanghai",
+    permissions: ["geolocation"], deviceScaleFactor: 1,
+  });
+  _globalBrowser = _globalContext;
+  await _globalContext.addInitScript({ content: STEALTH_SCRIPT });
+  console.log("[browser] 持久浏览器已启动，profile:", profileDir);
+}
+
+export function getGlobalContext() { return _globalContext; }
+
+export async function cleanupGlobalBrowser() {
+  if (_globalContext) {
+    try { await _globalContext.close(); } catch {}
+    _globalContext = null;
+    _globalBrowser = null;
+    console.log("[browser] 持久浏览器已关闭");
+  }
+}
+
 async function tryConnectCdp(chromium, cdpPort) {
   try {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
@@ -535,12 +576,20 @@ export async function createBrowser(rootDir, options = {}) {
 export function cleanupCdpChrome() {}
 
 export async function openXhsContext(rootDir, cookieOverride = "", optionOverrides = {}) {
+  // 优先使用全局持久浏览器
+  const globalCtx = getGlobalContext();
+  if (globalCtx) {
+    // 包装一个 dummy close（不关闭全局上下文）
+    const proxy = Object.create(globalCtx);
+    proxy.close = async () => {};
+    return proxy;
+  }
+  // 无全局浏览器时回退旧逻辑
   const { browser, context, isCdp } = await createBrowser(rootDir, optionOverrides);
   if (!isCdp) {
     const cookie = readXhsCookie(rootDir, cookieOverride);
     if (cookie) await context.addCookies(cookieStringToPlaywrightCookies(cookie));
   }
-  // CDP 模式：不关闭用户真实浏览器；常规模式：关闭 Playwright 进程
   const origClose = context.close.bind(context);
   context.close = async () => {
     await origClose();

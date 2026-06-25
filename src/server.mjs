@@ -954,8 +954,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 startScheduler(rootDir, storage);
+import("./xhsSdk.mjs").then(m => m.initGlobalBrowser(rootDir)).catch(e => console.warn("[server] 全局浏览器启动失败:", e.message));
 async function cleanupOnExit() {
-  try { const m = await import('./xhsSdk.mjs'); if (m.cleanupCdpChrome) m.cleanupCdpChrome(); } catch {}
+  try { const m = await import('./xhsSdk.mjs'); if (m.cleanupGlobalBrowser) m.cleanupGlobalBrowser(); } catch {}
   stopScheduler();
 }
 process.on("exit", () => cleanupOnExit());

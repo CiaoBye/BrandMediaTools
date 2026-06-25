@@ -29,8 +29,8 @@ export const defaultSettings = {
     userAgent:
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
     browserExecutable: "",
-    cdpPort: 9222,
-    useCdp: true,
+    cdpPort: 0,
+    useCdp: false,
     mappingData: {}
   },
   download: {
