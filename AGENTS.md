@@ -1,4 +1,4 @@
-# 项目级工作规则
+﻿# 项目级工作规则
 
 ## 项目定位
 本项目是"品牌内容情报与素材抓取工具"，第一阶段聚焦小红书公开/授权内容的采集、素材保存、内容分析和资产沉淀，服务 AI 视频创作、竞品研究、品牌内容运营和营销复盘。
@@ -13,13 +13,13 @@
 
 ### 代码分层
 - `src/xhsSdk.mjs`：低层 SDK，导出 29+ 个函数（含 `parseInitState` — SSR HTML `__INITIAL_STATE__` 解析，处理 `undefined`/`NaN` 值）。
-- `src/xhsCrawler.mjs` 与 `src/crawler/`：业务编排层，双层策略：① HTTP 快速路径（`fetchNoteViaHttp`，直接 fetch HTML + `__INITIAL_STATE__` 解析）→ ② 失败时降级 Playwright 页面解析。包含采集、搜索、评论、账号跟踪、Cookie 验证及链接提取。
+- `src/xhsCrawler.mjs` 与 `src/crawler/`：业务编排层，双层策略：① 公开页 HTML 快速路径（`fetchNoteViaHttp`，默认不带 Cookie fetch HTML + `__INITIAL_STATE__` 解析，XHS-Downloader 式主路径）→ ② 公开页解析失败或素材不足时降级 Cookie/Playwright 页面解析。包含采集、搜索、评论、账号跟踪、Cookie 验证及链接提取。
 - `src/xhsHealth.mjs`：健康检测工具函数（level 元信息、敏感词检测、标签检查），已不直接参与路由调用。
 - `src/xhsViralAnalysis.mjs`：病毒性分析（免 LLM，8 类钩子模式 + 互动率 + 评论主题聚类）。
 - `src/contentAnalysis.mjs`：内容统计聚合（标题钩子/句式分布、主题词频、互动统计、视觉/营销目的分布、分类统计）。
 - `src/reportGenerator.mjs`：内容报告（每周简报 / 每月复盘，Top10/品牌/钩子/环比 + JSON/Markdown 导出）。
-- `src/xhsLogin.mjs`：多账号 QR 扫码登录（Map 管理模式），支持 3 级 QR 降级提取。
-- `src/xhsAuth.mjs`：Cookie AES-256-GCM 加密/解密。
+- 登录态入口已收敛到专用浏览器 profile 绑定、后台授权态刷新和手动完整 Cookie 兜底。
+- `src/xhsAuth.mjs`：Cookie AES-256-GCM 加密/解密与登录态校验（解析 `__INITIAL_STATE__`，识别 guest/真实登录态）。
 - `src/server.mjs`：Express Web 服务器，包含所有 API 路由 + 启动调度器。
 - `src/storage.mjs` 与 `src/storage/`：SQLite 存储层，按笔记、账号、任务和统计子模块拆分。
 - `src/downloader.mjs`：下载引擎（图片格式转换、视频流过滤、part 文件、重试、Range 续传）。
@@ -28,7 +28,7 @@
 
 ### 前端
 - `public/index.html`：单页应用，含采集、搜索、内容库、仪表盘、内容分析、账号管理、定时任务等面板。
-- `public/app.js`：前端逻辑（QR 轮询、账号 CRUD、定时任务 CRUD、仪表盘 Chart.js 渲染、内容分析图表、评论展示、库分类管理等）。
+- `public/app.js`：前端逻辑（账号绑定入口、账号 CRUD、定时任务 CRUD、仪表盘 Chart.js 渲染、内容分析图表、评论展示、库分类管理等）。
 - `public/styles.css`：响应式样式（仪表盘 grid、搜索卡片网格、账号列表、调度任务列表等）。
 
 ### 数据库表
@@ -59,11 +59,12 @@
 - 图片格式转换和品质配置。
 - 视频分辨率过滤。
 - 级联删除笔记（文件 + DB）。
-- QR 二维码扫码登录（多账号独立会话）。
+- 登录主入口已简化为专用浏览器绑定 + 手动完整 Cookie 兜底，旧二维码登录链路已删除。
 - Cookie AES-256-GCM 加密。
 - 健康检测 creator 后端 level 字段分析（`xhsHealth.mjs`）。
 - 病毒性分析免 LLM 8 类钩子（`xhsViralAnalysis.mjs`）。
 - **HTTP + Playwright 双层采集**：公开分享页优先解析 SSR 状态，数据不足时直接导航目标页并从页面状态、DOM 和合法可访问的网络响应中补齐。
+- **公开页无 Cookie 主链路**（v1.13.5）：单篇作品默认先不带 Cookie 请求公开页 HTML 并解析 `window.__INITIAL_STATE__`，Cookie 仅作为公开页失败或素材不足时的兜底。
 - **`followAccount()` 增量跟踪**：从账号主页 DOM/SSR 提取作品链接，逐条走 HTTP 快速路径并在失败时降级 Playwright；游标保存历史作品 ID。
 - 仪表盘 Chart.js 5 图表。
 - 账号矩阵 CRUD。
@@ -74,9 +75,10 @@
 - **文件夹按日期-类型-标题命名**（`downloader.mjs`）：新增 `{type}`（中文：视频/图文/Live图文）、`{titleShort}`（自动截断20字）模板变量，默认 `folderNameFormat` 改为 `{date}-{type}-{titleShort}`。
 - **账号跟踪**（`followAccount` 在 `xhsCrawler.mjs`）：基于 Playwright SSR 导航到用户主页 + 响应拦截 `user_posted` API，支持增量跟随（已知 note_id 去重提前停止）。新表 `followed_accounts` + `follow_checks` 记录每次检查的新/旧笔记数。独立前端页面展示卡片列表 + 迷你柱状图 + 时间线弹窗。
 - **定时跟随任务**（`scheduler.mjs`）：新增 `task_type: "follow"` 处理逻辑，自动提取 `userId`、对比去重、落盘新笔记、记录检查统计。
+- **简化认证体系**（v1.13.4+）：前端只保留专用浏览器绑定、手动完整 Cookie 兜底与 Cookie 检测；旧二维码登录链路已删除。所有 Cookie 入库前均需通过真实登录态校验。
 
 ## 参考工具说明
-可以参考 JoeanAmier/XHS-Downloader 的功能设计，包括作品信息采集、下载地址提取、文件下载、下载记录、文件夹归档、Cookie 配置、API/MCP 模式和断点续传等思路，但不要复制其源码，也不要把它作为本项目的外部运行依赖或可选适配器。
+可以参考 JoeanAmier/XHS-Downloader 的功能设计，包括作品信息采集、下载地址提取、文件下载、下载记录、文件夹归档、Cookie 配置、API/MCP 模式和断点续传等思路，但不要复制其源码，也不要把它作为本项目的外部运行依赖或可选适配器。重点可借鉴单篇作品的公开页 HTML + `window.__INITIAL_STATE__` 解析、图片/视频/Live 图资源归一化、下载记录去重与 Range 续传；其用户主页签名请求模块只做风险评估，不纳入项目实现。当前项目 v1.13.5 已将单篇作品采集主路径调整为无 Cookie 公开页优先。
 
 可以参考 sigcli/sigcli 的 Cookie 获取思路：只基于用户本机正常登录后的浏览器登录态读取 Cookie，不做账号登录绕过、验证码绕过或风控绕过。
 
@@ -99,7 +101,7 @@
 - `src/xhsViralAnalysis.mjs`：病毒性分析（免 LLM 8 类钩子 + 互动率）
 - `src/contentAnalysis.mjs`：内容统计聚合（标题钩子/句式分布、主题词频、互动统计、视觉/营销目的分布、分类统计）
 - `src/reportGenerator.mjs`：内容报告（每周简报 / 每月复盘，Top10/品牌/钩子/环比 + JSON/Markdown 导出）
-- `src/xhsLogin.mjs`：多账号 QR 扫码登录
+- `src/crawler/auth.mjs`：专用浏览器 profile 绑定、Cookie 提取和后台授权态刷新
 - `src/xhsAuth.mjs`：AES-256-GCM Cookie 加密
 - `src/server.mjs`：Express 服务器（含搜索/评论/QR/账号/调度/仪表盘路由、账号跟随/抓取路由）
 - `src/storage.mjs`：SQLite 存储层（7 张表 CRUD + 聚合统计 + followed_accounts/follow_checks 跟踪）
@@ -116,7 +118,7 @@
 - `src/xhsViralAnalysis.mjs`：病毒性分析（免 LLM 8 类钩子 + 互动率）
 - `src/contentAnalysis.mjs`：内容统计聚合
 - `src/reportGenerator.mjs`：内容报告
-- `src/xhsLogin.mjs`：多账号 QR 扫码登录
+- `src/crawler/auth.mjs`：专用浏览器 profile 绑定、Cookie 提取和后台授权态刷新
 - `src/xhsAuth.mjs`：AES-256-GCM Cookie 加密
 - `src/server.mjs`：Express 服务器（含账户/跟随/检测名称/全局异常 API）
 - `src/storage.mjs`：SQLite 存储层（9 张表 + followed_accounts/follow_checks 跟踪）
@@ -125,7 +127,6 @@
 - `src/settings.mjs`：默认配置（12 家 AI 服务预设 + 自定义）
 - `src/time.mjs`：北京时间工具
 - `public/index.html` / `app.js` / `styles.css`：前端 SPA
-
 ## 已知问题 / 待验证
 - QR 扫码全链路需要本地 `npm start` 后验证（服务器需加载新代码）。
 - 插件/多账号加密/解密全链路需验证。
@@ -134,6 +135,48 @@
 - **HTTP 快速路径仅对含 `xsec_token` 的 URL 有效** — `fetchNoteViaHttp` 自动跳过无 token URL，走 Playwright 降级
 
 ## 近期修复
+### 2026-06-30 v1.13.9 采集链路审计测试与去重修复
+- 新增 `tests/crawl-chain-audit-test.mjs`，把账号采集增强、successNoteIds 去重、Cookie/CDP 上下文、noteId 存储去重、定时 follow 一致性、Range 回退和弃用代码残留纳入回归检查。
+- 修复 `saveXhsCookieFromBrowser()` 登录等待 `deadline` 未定义导致专用浏览器绑定/刷新 Cookie 入口失败的问题；浏览器态识别不再把 `guest_user_id` 当作真实登录。
+- 手动 Cookie 保存、浏览器 Cookie 保存和调度器健康检查会持久化校验时返回的更新后 Cookie，避免 DB 加密 Cookie 与 `data/xhs-cookie.txt` 保留旧值。
+- `createBrowser()` 支持 `cdpPort: 0` 显式覆盖设置中的 CDP 端口，传入 Cookie 的采集链路应优先使用独立 Playwright 上下文注入 Cookie。
+- `notes` 存储、手动账号抓取、定时 follow 和 skip 判断优先按 canonical noteId 去重，避免同一笔记不同 URL 形态重复入库。
+- 定时 follow 会合并数据库已有 noteId，并在本次解析不到作者名、头像或品牌时保留旧账号资料。
+- 搜索链路移除旧 `xhsApiClient` API-first 分支，并删除 `src/xhsApiClient.mjs` 与 `src/signserver/` 旧签名服务；旧签名/API 代码不得重新接入采集主线。
+- Range 续传遇到服务端返回 200 时立即回退完整下载，不再消耗重试次数。
+
+### 2026-06-29 v1.13.8 账号抓取 Cookie 上下文修复
+- 修复 `/api/follow/crawl` 在服务启动后复用全局持久浏览器，导致已保存 Cookie 未注入、账号主页作品列表提取为 0 的问题。
+- 当调用方传入已保存 Cookie 时，`openXhsContext()` 改为创建独立带 Cookie 的 Playwright 上下文；仅无 Cookie 且需要浏览器会话时才复用全局上下文或 CDP。
+- 账号抓取链路新增开始、候选链接数量、完成和失败日志，运行日志可直接看到是否提取到图文候选。
+
+### 2026-06-29 v1.13.5 公开页无 Cookie 主链路
+- `fetchNoteViaHttp()` 改为默认先不带 Cookie 请求公开作品页 HTML，解析 `window.__INITIAL_STATE__` 获取作品元数据和下载资源。
+- 本地即使存在 Cookie，单篇作品采集也优先不发送 Cookie；只有公开页解析失败或素材不足时才尝试 Cookie 兜底。
+- `crawlWithFallback()` 日志改为“公开页 HTML”路径，明确主路径不是登录态 API。
+- 新增回归测试覆盖“本地有 Cookie 但公开页可解析时必须使用 public acquisitionMode”的场景。
+
+### 2026-06-29 v1.13.4 登录方式简化与 XHS-Downloader 研究
+- 账号管理页主入口收敛为「打开专用浏览器绑定」「手动粘贴完整 Cookie」「检测 Cookie」，旧二维码登录链路已删除。
+- 设置页移除 SigCLI 预留配置展示，保留专用浏览器会话、两小时自动复检/刷新和后台刷新等待时间。
+- 研究 XHS-Downloader 最新实现：单篇作品详情使用 HTTP 获取 HTML、解析 `window.__INITIAL_STATE__`、抽取作品字段与图片/视频/Live 图资源；下载层具备记录去重、文件夹归档、Range 续传和重试。
+- 其用户主页列表模块使用签名请求，属于更高账号/平台风险路径，本项目不接入、不复制。
+- 将 HTTP 快速路径旧日志中的“绕过风控”表述修正为公开页降级重试。
+
+### 2026-06-29 v1.13.3 三通道认证体系合并
+- 新增 Network 完整 Cookie 教程入口，手动粘贴 Cookie 保存前会进行真实登录态校验，访客态或跳登录页 Cookie 不再入库。
+- 浏览器提取 Cookie 成功后同步写入 `data/xhs-cookie.txt` 和 `xhs_accounts` 加密账号库，修复定时任务仍使用旧 DB Cookie 的问题。
+- 调度器两小时健康巡检新增非交互式专用 CDP 会话刷新：若专用浏览器已有登录态，会自动刷新单账号 DB Cookie；未登录时不弹窗打扰。
+- 服务重启时自动结束残留“运行中”任务日志，并把卡在运行态的定时任务恢复为等待态，避免强制重启后 UI 误判任务仍在执行。
+- 设置页新增 `autoRefreshCookie`、`cookieRefreshWaitMs`、`authProvider`、`sigCliCommand` 配置；SigCLI 作为可选外部凭证代理预留，不作为强制依赖。
+- 新增 `AUTH_STRATEGY_REPORT.md` 记录当前方式、Network Cookie、真实浏览器会话与 SigCLI 的对比。
+
+### 2026-06-29 v1.13.2 Cookie 登录态与 CDP 提取修复
+- 修复 Cookie 检测误判：不再只凭 `web_session` 和 `/explore` HTTP 200 判断有效，改为解析页面 `__INITIAL_STATE__` 的 `guest`/`loggedIn`/`userInfo` 状态，当前访客态 Cookie 会被正确判为无效。
+- 修复「从 Chrome 提取 Cookie」实际链路：默认等待 120 秒，打开专用浏览器登录页等待用户正常登录，保存前再次校验真实登录态。
+- 修复 CDP 启动安全问题：移除 `taskkill`，不再误杀用户已有 Chrome，只使用项目专属 `.browser-profile/chrome-cdp`。
+- 新增 `tests/cookie-auth-state-test.mjs`，版本升级至 v1.13.2，`npm test` 全量通过。
+
 ### 2026-06-24 v1.10 全链路审计修复
 - 修复下载原子落盘、WebP 转换、报告 500、互动统计、Playwright 目标页导航、调度失败重试和暂停状态。
 - 修复二维码误判、Cookie 加密兼容、Live 图文类型及素材原始地址、通知配置读写。
@@ -303,7 +346,7 @@
 - `src/xhsViralAnalysis.mjs`：病毒性分析（免 LLM 8 类钩子 + 互动率）
 - `src/contentAnalysis.mjs`：内容统计聚合
 - `src/reportGenerator.mjs`：内容报告
-- `src/xhsLogin.mjs`：多账号 QR 扫码登录
+- `src/crawler/auth.mjs`：专用浏览器 profile 绑定、Cookie 提取和后台授权态刷新
 - `src/xhsAuth.mjs`：AES-256-GCM Cookie 加密
 - `src/server.mjs`：Express 服务器（含账户/跟随/检测名称/全局异常 API）
 - `src/storage.mjs`：SQLite 存储层（9 张表 + followed_accounts/follow_checks 跟踪）

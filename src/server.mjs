@@ -6,20 +6,18 @@ import { fileURLToPath } from "node:url";
 import { Storage } from "./storage.mjs";
 import { sendJson, sendText, readBody, serveFile, crawlAndStore, diagnose, getCached, setCached, clearCache, clearCacheByPrefix } from "./server-utils.mjs";
 import { crawlXhs, extractXhsUrls, extractPageLinks, isXhsNoteUrl, mergeXhsLinks, openXhsContext, saveXhsCookieFromBrowser, searchXhs, collectComments } from "./xhsCrawler.mjs";
-import { sleep, isAccountUrl, setCrawlerLogger } from "./xhsSdk.mjs";
+import { sleep, isAccountUrl, extractXhsId, setCrawlerLogger } from "./xhsSdk.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
 import { analyzeNote } from "./aiAnalyzer.mjs";
 import { parseBool, loadSettings, clearSettingsCache, aiPresets, resolveAiConfig } from "./settings.mjs";
 import { analyzeViral, analyzeTitle, analyzeBody } from "./xhsViralAnalysis.mjs";
 import { getTitleStats, getBodyStats, getEngagementStats, getVisualStyleStats, getMarketingGoalStats, getContentTypeStats, getAuthorStats, getLibraryStats } from "./contentAnalysis.mjs";
 import { generateReport } from "./reportGenerator.mjs";
-import { startQrLogin, checkQrLoginStatus, collectQrCookies, cancelQrLogin } from "./xhsLogin.mjs";
 import { encryptCookie, decryptCookie, readXhsCookie, resolveCookie, checkCookieValid, cleanCookieString } from "./xhsAuth.mjs";
 import { startScheduler, stopScheduler, runHealthCheckNow } from "./scheduler.mjs";
 import { fmtDate } from "./time.mjs";
 import { Logger, setGlobalLogger } from "./logger.mjs";
 import { sendWebhook } from "./webhook.mjs";
-import { clearCookieCache } from "./xhsApiClient.mjs";
 import { exportForEagle } from "./eagleExporter.mjs";
 import { isOfficialXhsLogo } from "./crawler/account.mjs";
 
@@ -52,7 +50,7 @@ try {
   if (existsSync(tokenPath)) {
     APP_TOKEN = readFileSync(tokenPath, "utf8").trim();
   }
-} catch {}
+    } catch {}
 if (!APP_TOKEN || APP_TOKEN.length !== 32) {
   APP_TOKEN = _randomBytes(16).toString("hex");
   try {
@@ -207,7 +205,14 @@ route("POST", "/api/xhs-accounts", async (req, res) => {
   if (body.name) data.name = body.name;
   if (body.cookie) {
     const washed = cleanCookieString(body.cookie);
-    data.cookieEncrypted = encryptCookie(washed, rootDir);
+    const check = await checkCookieValid(rootDir, washed);
+    if (!check.valid) {
+      sendJson(res, 400, { error: `Cookie 未通过登录态校验：${check.reason}`, diagnostics: check });
+      return;
+    }
+    data.cookieEncrypted = encryptCookie(check.cookieUpdated || washed, rootDir);
+    data.status = "有效";
+    data.lastCheckAt = new Date().toISOString();
   }
   if (body.status) data.status = body.status;
   sendJson(res, 200, storage.upsertXhsAccount(data));
@@ -247,38 +252,6 @@ route("GET", "/api/xhs-accounts/check-cookie", async (req, res, url) => {
 });
 route("POST", "/api/xhs-accounts/check-all", async (req, res) => {
   try { await runHealthCheckNow(rootDir, storage); sendJson(res, 200, { ok: true }); } catch (error) { sendJson(res, 500, { error: error.message }); }
-});
-
-route("POST", "/api/auth/qr/start", async (req, res) => {
-  const body = await readBody(req);
-  try { sendJson(res, 200, await startQrLogin(rootDir, body.accountName || "default", { proxy: body.proxy || "" })); } catch (error) { sendJson(res, 500, { error: error.message }); }
-});
-route("GET", "/api/auth/qr/status", async (req, res, url) => {
-  try { sendJson(res, 200, await checkQrLoginStatus(url.searchParams.get("accountName") || "default")); } catch (error) { sendJson(res, 500, { error: error.message }); }
-});
-route("POST", "/api/auth/qr/finalize", async (req, res) => {
-  const body = await readBody(req);
-  const accountName = body.accountName || "default";
-  try {
-    const result = await collectQrCookies(accountName);
-    if (result.ok) {
-      const encrypted = encryptCookie(result.cookieString, rootDir);
-      const name = result.nickname || accountName;
-      storage.upsertXhsAccount({ name, cookieEncrypted: encrypted, status: "有效" });
-      try {
-        const settings = (await import("./settings.mjs")).envWithSettings(rootDir);
-        const cookieFile = path.isAbsolute(settings.xhs.cookieFile) ? settings.xhs.cookieFile : path.join(rootDir, settings.xhs.cookieFile);
-        mkdirSync(path.dirname(cookieFile), { recursive: true });
-        writeFileSync(cookieFile, result.cookieString, "utf8");
-      } catch {}
-      sendJson(res, 200, { ok: true, cookieCount: result.cookieCount, accountName: name });
-    } else { sendJson(res, 500, { ok: false, error: result.error }); }
-  } catch (error) { sendJson(res, 500, { ok: false, error: error.message }); }
-});
-route("POST", "/api/auth/qr/cancel", async (req, res) => {
-  const body = await readBody(req);
-  cancelQrLogin(body.accountName || "default");
-  sendJson(res, 200, { ok: true });
 });
 
 // ===== Scheduled Tasks =====
@@ -381,7 +354,7 @@ route("POST", "/api/follow/crawl", async (req, res) => {
     const settings = (await import("./settings.mjs")).envWithSettings(rootDir);
     const useCdp = settings.xhs.cdpPort > 0;
     const cookieRaw = resolveCookie(rootDir, storage);
-    if (!cookieRaw && !useCdp) { sendJson(res, 400, { error: "未找到有效的登录 Cookie。请通过「账号管理」扫码登录或粘贴 Cookie，或开启 CDP 模式使用 Chrome 自带登录态。" }); return; }
+    if (!cookieRaw && !useCdp) { sendJson(res, 400, { error: "未找到有效的登录 Cookie。请通过「账号管理」打开专用浏览器绑定，或手动粘贴完整 Cookie。" }); return; }
     const { followAccount } = await import("./xhsCrawler.mjs");
     const followed = storage.getFollowedAccountByUserId(userId);
     let knownNoteIds = [];
@@ -389,14 +362,22 @@ route("POST", "/api/follow/crawl", async (req, res) => {
       const parsedIds = JSON.parse(followed?.last_cursor || "[]");
       if (Array.isArray(parsedIds)) {
         knownNoteIds = parsedIds.filter(nid => {
-          return !!storage.findNoteBySourceUrl(`https://www.xiaohongshu.com/explore/${nid}`);
+          return !!storage.findNoteByNoteId(nid);
         });
       }
     } catch {}
-    const result = await followAccount({ userId, authorUrl: body.authorUrl, brand: body.brand, knownNoteIds }, { rootDir, cookie: cookieRaw || "", cdpPort: useCdp ? (settings.xhs.cdpPort || 9222) : 0 });
+    const dbKnownNoteIds = storage.listNotes({ authorId: userId })
+      .map((note) => note.noteId || extractXhsId(note.sourceUrl || ""))
+      .filter(Boolean);
+    knownNoteIds = Array.from(new Set([...knownNoteIds, ...dbKnownNoteIds]));
+    const crawlCdpPort = cookieRaw ? 0 : (useCdp ? (settings.xhs.cdpPort || 9222) : 0);
+    const maxNotes = Math.max(1, Number(body.maxNotes || 30));
+    logger.info("账号抓取请求开始", { userId, brand: body.brand || "", knownNoteIds: knownNoteIds.length, useCdp: crawlCdpPort > 0, hasCookie: Boolean(cookieRaw) });
+    const result = await followAccount({ userId, authorUrl: body.authorUrl, brand: body.brand, knownNoteIds }, { rootDir, cookie: cookieRaw || "", cdpPort: crawlCdpPort, maxNotes });
     let newCount = 0;
     for (const note of result.notes) {
-      if (!storage.findNoteBySourceUrl(note.sourceUrl)) {
+      const noteId = note.noteId || extractXhsId(note.sourceUrl || "");
+      if (!(noteId ? storage.findNoteByNoteId(noteId) : storage.findNoteBySourceUrl(note.sourceUrl))) {
         const saved = storage.upsertNote(note);
         storage.addAssets(saved.id, await persistNoteAssets(rootDir, { ...note, id: saved.id, collectedAt: saved.collectedAt }));
         newCount++;
@@ -404,12 +385,25 @@ route("POST", "/api/follow/crawl", async (req, res) => {
     }
     const actualUserId = userId || result.notes[0]?.authorId || "";
     if (actualUserId) {
-      const updated = storage.upsertFollowedAccount({ userId: actualUserId, authorName: result.authorName, avatarUrl: result.avatarUrl, authorUrl: body.authorUrl, brand: body.brand, lastCursor: result.cursor || "", lastCheckAt: new Date().toISOString(), totalFound: result.totalFound });
+      const updated = storage.upsertFollowedAccount({
+        userId: actualUserId,
+        authorName: result.authorName || followed?.author_name || "",
+        avatarUrl: result.avatarUrl || followed?.avatar_url || "",
+        authorUrl: body.authorUrl || followed?.author_url || "",
+        brand: body.brand || followed?.brand || "",
+        lastCursor: result.cursor || "",
+        lastCheckAt: new Date().toISOString(),
+        totalFound: result.totalFound
+      });
       if (updated) storage.createFollowCheck({ accountId: updated.id, newNotes: newCount, totalNotes: result.totalFound });
     }
+    logger.info("账号抓取请求完成", { userId, returnedNotes: result.notes.length, newNotes: newCount, totalFound: result.totalFound });
     if (newCount > 0) { clearCache(); sendWebhook(rootDir, "账号追踪完成", `账号：${result.authorName || userId}\n新增笔记：${newCount} 条\n总笔记：${result.totalFound} 篇`); }
     sendJson(res, 200, { ok: true, notes: result.notes.length, newNotes: newCount, authorName: result.authorName, avatarUrl: result.avatarUrl || "" });
-  } catch (error) { sendJson(res, 500, { error: error.message }); }
+  } catch (error) {
+    logger.error("账号抓取请求失败", { userId, brand: body.brand || "", message: error.message, stack: error.stack });
+    sendJson(res, 500, { error: error.message });
+  }
 });
 route("GET", null, async (req, res, url) => {
   const m = url.pathname.match(/^\/api\/follow\/accounts\/([^/]+)\/timeline$/);
@@ -527,7 +521,7 @@ route("POST", "/api/accounts/detect-name", async (req, res) => {
         }).catch(() => ({ isCaptcha: false, isGuest: false }));
 
         if (page.url().includes("/login") || page.url().includes("captcha") || page.url().includes("website-login") || checkStatus.isCaptcha || checkStatus.isGuest) {
-          throw new Error("Cookie 无效、已过期或遇到了风控验证，无法正常检测账号名。请先去账号管理页面重新扫码登录并更新 Cookie。");
+          throw new Error("Cookie 无效、已过期或遇到了风控验证，无法正常检测账号名。请先去账号管理页面打开专用浏览器绑定，或手动粘贴完整 Cookie。");
         }
 
         for (let i = 0; i < 5; i++) {
@@ -748,14 +742,33 @@ route("POST", "/api/settings/xhs-cookie", async (req, res) => {
   const rawCookie = String(body.cookie || "").trim();
   const cookie = cleanCookieString(rawCookie);
   if (!cookie || !cookie.includes("=")) { sendJson(res, 400, { error: "请粘贴有效的小红书 Cookie" }); return; }
-  writeFileSync(path.join(rootDir, "data", "xhs-cookie.txt"), cookie, "utf8");
-  try { clearCookieCache(); } catch {}
-  sendJson(res, 200, { ok: true, message: "小红书 Cookie 已保存" });
+  const check = await checkCookieValid(rootDir, cookie);
+  if (!check.valid) {
+    sendJson(res, 400, { error: `Cookie 未通过登录态校验：${check.reason}`, diagnostics: check });
+    return;
+  }
+  writeFileSync(path.join(rootDir, "data", "xhs-cookie.txt"), check.cookieUpdated || cookie, "utf8");
+  sendJson(res, 200, { ok: true, message: "小红书 Cookie 已保存", diagnostics: { cookieCount: check.cookieCount, nickname: check.nickname || "" } });
 });
 route("POST", "/api/settings/xhs-cookie/from-browser", async (req, res) => {
   const body = await readBody(req);
   try {
-    const result = await saveXhsCookieFromBrowser(rootDir, { waitMs: Number(body.waitMs || 8000), proxy: body.proxy || "" });
+    const result = await saveXhsCookieFromBrowser(rootDir, { waitMs: Number(body.waitMs || 120000), proxy: body.proxy || "", interactive: body.interactive !== false });
+    try {
+      const savedCookie = readFileSync(path.join(rootDir, "data", "xhs-cookie.txt"), "utf8").trim();
+      if (savedCookie) {
+        const name = result.nickname || body.accountName || body.name || "浏览器会话";
+        storage.upsertXhsAccount({
+          name,
+          cookieEncrypted: encryptCookie(savedCookie, rootDir),
+          status: "有效",
+          lastCheckAt: new Date().toISOString(),
+          lastUsedAt: new Date().toISOString()
+        });
+      }
+    } catch (postErr) {
+      console.warn("[from-browser] 保存加密账号失败:", postErr.message);
+    }
     sendJson(res, 200, { ok: true, message: "已从本机浏览器登录态保存小红书 Cookie", ...result });
   } catch (error) { sendJson(res, 500, { ok: false, error: error.message }); }
 });
@@ -773,19 +786,8 @@ route("POST", "/api/xhs/test-cookie", async (req, res) => {
       diagnostics.hasWebSession = cookieRaw.includes("web_session=");
     }
 
-    // 用 Cookie 测试请求小红书首页（验证 Cookie 是否有效）
-    let cookieValid = false;
-    if (diagnostics.hasA1) {
-      try {
-        const r = await fetch("https://www.xiaohongshu.com/explore", {
-          headers: { Cookie: cookieRaw, "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" },
-          redirect: "manual",
-        });
-        cookieValid = r.status === 200;
-      } catch {}
-    }
-
-    sendJson(res, 200, { ok: cookieValid, diagnostics, note: "xhsow API 线路已停用，采集走 SSR + Playwright。Cookie 仅用于 Playwright 登录态" });
+    const check = cookieRaw ? await checkCookieValid(rootDir, cookieRaw) : { valid: false, reason: "未找到 Cookie" };
+    sendJson(res, 200, { ok: check.valid, diagnostics: { ...diagnostics, reason: check.reason || "", nickname: check.nickname || "" }, note: "xhshow API 线路已停用，采集走 SSR + Playwright。Cookie 仅用于 Playwright 登录态" });
   } catch (error) { sendJson(res, 500, { error: error.message }); }
 });
 
@@ -816,7 +818,7 @@ route("POST", "/xhs/links", async (req, res) => {
   if (!parsedUrls.length) { sendJson(res, 400, { message: "请提供链接", links: [] }); return; }
   const directNoteLinks = parsedUrls.filter((item) => isXhsNoteUrl(item));
   const pageUrl = parsedUrls.find((item) => !isXhsNoteUrl(item)) || "";
-  if (!pageUrl) { sendJson(res, 200, { message: "success", count: directNoteLinks.length, links: mergeXhsLinks(parsedUrls) }); return; }
+  if (!pageUrl) { const ml = mergeXhsLinks(parsedUrls); sendJson(res, 200, { message: "success", count: directNoteLinks.length, links: ml.map(function(l){return typeof l === "string" ? l : l.url;}), xsecTokenResults: ml.map(function(l){return typeof l === "string" ? { url: l, hasXsecToken: l.includes("xsec_token"), noteId: extractXhsId(l) } : l;}) }); return; }
   let browserContext = null;
   try {
     browserContext = await openXhsContext(rootDir, body.cookie || "", { headless: !!body.headless, proxy: body.proxy || "" });
@@ -825,9 +827,9 @@ route("POST", "/xhs/links", async (req, res) => {
     await new Promise((resolve) => setTimeout(resolve, 2500));
     const diagnosis = await page.evaluate(() => ({ title: document.title, url: location.href, text: document.body?.innerText?.slice(0, 500) || "" }));
     const links = await extractPageLinks(page, { rootDir, maxNotes: body.maxNotes, scrollPages: body.scrollPages, scrollDelayMs: body.scrollDelayMs });
-    sendJson(res, 200, { message: links.length ? "success" : "empty", inputUrl: pageUrl, count: links.length, links: mergeXhsLinks(directNoteLinks, links), diagnosis });
+    const mergedLinks = mergeXhsLinks(directNoteLinks, links); const linksWithXsec = mergedLinks.map(function(l){return typeof l === "string" ? { url: l, hasXsecToken: l.includes("xsec_token"), noteId: extractXhsId(l) } : l;}); sendJson(res, 200, { message: links.length ? "success" : "empty", inputUrl: pageUrl, count: linksWithXsec.length, links: linksWithXsec.map(function(l){return l.url;}), xsecTokenResults: linksWithXsec, diagnosis });
   } catch (error) {
-    if (directNoteLinks.length) { sendJson(res, 200, { message: "partial", inputUrl: pageUrl, count: directNoteLinks.length, links: mergeXhsLinks(directNoteLinks), error: error.message }); return; }
+    if (directNoteLinks.length) { const ml = mergeXhsLinks(directNoteLinks); sendJson(res, 200, { message: "partial", inputUrl: pageUrl, count: ml.map(function(l){return typeof l === "string" ? l : l.url;}).length, links: ml.map(function(l){return typeof l === "string" ? l : l.url;}), xsecTokenResults: ml.map(function(l){return typeof l === "string" ? { url: l, hasXsecToken: l.includes("xsec_token"), noteId: extractXhsId(l) } : l;}), error: error.message }); return; }
     sendJson(res, 500, { message: error.message, links: [] });
   } finally { if (browserContext) await browserContext.close(); }
 });
@@ -865,7 +867,7 @@ const server = http.createServer(async (req, res) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
     res.setHeader("Referrer-Policy", "same-origin");
-    res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self'; frame-ancestors 'none'");
+    res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: http: https:; media-src 'self' blob: http: https:; connect-src 'self'; frame-ancestors 'none'");
     const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
     // 对非 GET 的 API 请求验证 App Token（防 CSRF）
     if (process.env.NODE_ENV !== "test" && req.method !== "GET" &&

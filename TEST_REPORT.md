@@ -1,5 +1,40 @@
 # 最小功能测试反馈
 
+## v1.13.5 公开页无 Cookie 主链路验证（2026-06-29）
+
+- `npm.cmd test`：通过（100%）。覆盖 52 个源码/测试文件语法检查，以及核心、调度、浏览器降级、MCP、Eagle、下载模板、剪贴板、链接合并、存储筛选、游标过滤、Cookie 挂起、Cookie 登录态识别和服务集成测试。
+- `node --no-warnings tests/api-smoke-test.mjs`：通过，12 passed / 0 failed。健康、统计、内容分析、周报/月报、内容库、账号、定时任务和首页均可访问。
+- **服务重启验证**：已重启服务，当前 PID `34124`，健康接口返回 `{"ok":true,"name":"小红书品牌内容情报工具"}`。
+- **公开页优先回归**：通过。新增用例模拟“本地存在 Cookie 且带 Cookie 会返回登录页，但无 Cookie 公开页可解析”的场景，`fetchNoteViaHttp()` 正确返回 `raw.acquisitionMode = "public"` 且 `raw.authUsed = false`。
+- **XHS-Downloader 式单篇主路径**：通过代码与回归验证。单篇作品采集默认先请求公开页 HTML 并解析 `window.__INITIAL_STATE__`，提取作品元数据和图片/视频/Live 图资源；Cookie 只作为公开页失败或素材不足时的兜底。
+- **Playwright 兜底保护**：通过 `playwright-fallback-test`，公开页解析失败时仍可降级浏览器页面解析，不影响原兜底能力。
+
+## v1.13.4 登录方式简化与 XHS-Downloader 研究验证（2026-06-29）
+
+- `npm.cmd test`：通过（100%）。覆盖 52 个源码/测试文件语法检查，以及核心、调度、浏览器降级、MCP、Eagle、下载模板、剪贴板、链接合并、存储筛选、游标过滤、Cookie 挂起、Cookie 登录态识别和服务集成测试。
+- `npm.cmd run check`：补充通过。版本锁文件同步后再次确认 52 个源码/测试文件语法检查通过。
+- `node --no-warnings tests/api-smoke-test.mjs`：通过，12 passed / 0 failed。健康、统计、内容分析、周报/月报、内容库、账号、定时任务和首页均可访问。
+- **服务重启验证**：已重启服务，当前健康接口返回 `{"ok":true,"name":"小红书品牌内容情报工具"}`。
+- **登录入口简化界面验证**：通过内置浏览器检查账号矩阵页，主入口只显示「打开专用浏览器绑定」「手动粘贴完整 Cookie」「检测 Cookie」；二维码入口、独立 Network 教程按钮和 SigCLI 设置文案均不再展示。
+- **手动 Cookie 兜底入口验证**：点击「手动粘贴完整 Cookie」后，Cookie 输入框与复制教程同步展开；控制台无错误。
+- **XHS-Downloader 研究结论**：已记录到 `AUTH_STRATEGY_REPORT.md`。可安全借鉴其公开页 HTML + `window.__INITIAL_STATE__` 解析、图片/视频/Live 图资源归一化、下载记录和断点续传思路；不接入其用户主页签名请求模块。
+
+## v1.13.3 三通道认证体系合并验证（2026-06-29）
+
+- `npm test`：通过（100%）。覆盖 52 个源码/测试文件语法检查，以及全部核心、调度、浏览器降级、MCP、Eagle、下载模板、剪贴板、链接合并、存储筛选、游标过滤、Cookie 挂起、Cookie 登录态识别和服务集成测试。
+- **Network 完整 Cookie 入口**：通过代码与界面验证。账号管理页新增教程入口，手动粘贴保存前会进行真实登录态校验，访客态 Cookie 不再入库。
+- **真实浏览器会话入口**：通过代码验证。浏览器提取成功后同步写入 `data/xhs-cookie.txt` 与 `xhs_accounts` 加密 Cookie，避免定时任务继续使用旧 DB Cookie。
+- **自动复检/刷新**：通过调度回归。两小时健康巡检保留原自动挂起保护，同时新增非交互式专用 CDP 会话刷新逻辑；未登录时不弹窗打扰。
+- **调度重启恢复保护**：通过代码验证。服务启动时会清理强制重启遗留的“运行中”日志，并将残留运行态任务恢复为等待态。
+- **SigCLI 兼容位**：已加入设置项作为外部凭证代理预留，不安装 SigCLI 时不影响项目运行。
+
+## v1.13.2 Cookie 登录态与 CDP 提取修复验证（2026-06-29）
+
+- `npm test`：通过（100%）。包含 52 个源码/测试文件语法检查，以及核心、调度、浏览器降级、MCP、Eagle、命名模板、剪贴板、链接合并、存储筛选、游标过滤、降级判断、Cookie 自动挂起、Cookie 登录态识别和服务集成测试。
+- **Cookie 访客态误判修复**：通过。当前本地 Cookie 虽包含 `a1`、`web_session` 等字段，但页面状态为非登录/访客态，修复后 `checkCookieValid()` 正确返回无效，不再误判为可抓取 Cookie。
+- **CDP 提取链路修复**：通过代码与语法验证。`/api/settings/xhs-cookie/from-browser` 默认等待 120 秒，保存前要求真实登录态；`launchCdpChrome()` 不再误杀系统 Chrome，仅启动/连接项目专属调试浏览器配置目录。
+- **离线回归**：新增 `tests/cookie-auth-state-test.mjs`，覆盖 guest、logged-in 与登录页三类 HTML 状态识别。
+
 ## v1.13.1 审计修复与稳定性强化验证（2026-06-25）
 
 - `npm test`：通过（100%）。包含 48 个源码/测试文件语法检查，以及所有核心及集成测试。

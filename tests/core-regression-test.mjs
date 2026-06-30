@@ -50,6 +50,38 @@ const server = http.createServer((req, res) => {
     res.end(`<script>window.__INITIAL_STATE__=${JSON.stringify(state)}</script>`);
     return;
   }
+  if (req.url === "/public-first") {
+    if (req.headers.cookie) {
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end("<html><body>手机号登录 登录小红书</body></html>");
+      return;
+    }
+    const state = {
+      note: {
+        noteDetailMap: {
+          publicFirst: {
+            note: {
+              noteId: "public-first-note",
+              title: "公开页优先测试",
+              desc: "即使本地存在 Cookie，也应优先不带 Cookie 解析公开页",
+              type: "normal",
+              time: Date.now(),
+              user: { nickname: "公开页作者", userId: "public-author" },
+              interactInfo: { likedCount: 1, commentCount: 0 },
+              imageList: [{
+                width: 720,
+                height: 960,
+                urlDefault: `http://127.0.0.1:${server.address().port}/asset.png`
+              }]
+            }
+          }
+        }
+      }
+    };
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`<script>window.__INITIAL_STATE__=${JSON.stringify(state)}</script>`);
+    return;
+  }
   res.writeHead(404);
   res.end();
 });
@@ -102,6 +134,12 @@ try {
   const liveNotes = await fetchNoteViaHttp({ url: `http://127.0.0.1:${port}/live` }, { rootDir });
   assert.equal(liveNotes[0].contentType, "Live图文");
   assert.ok(liveNotes[0].assets.every((asset) => asset.sourceUrl));
+  mkdirSync(path.join(rootDir, "data"), { recursive: true });
+  writeFileSync(path.join(rootDir, "data", "xhs-cookie.txt"), "a1=stale; web_session=stale-session", "utf8");
+  const publicFirstNotes = await fetchNoteViaHttp({ url: `http://127.0.0.1:${port}/public-first` }, { rootDir });
+  assert.equal(publicFirstNotes[0].title, "公开页优先测试");
+  assert.equal(publicFirstNotes[0].raw.acquisitionMode, "public");
+  assert.equal(publicFirstNotes[0].raw.authUsed, false);
 
   assert.equal(fmtDate("2026-06-23T16:00:00.000Z"), "2026-06-24");
   assert.match(fmtDateTime("2026-06-23T16:00:00.000Z"), /^2026-06-24 24:00$|^2026-06-24 00:00$/);

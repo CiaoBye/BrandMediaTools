@@ -1,7 +1,7 @@
 import { createReadStream, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { parseBool, envWithSettings } from "./settings.mjs";
-import { extractXhsUrls } from "./xhsSdk.mjs";
+import { extractXhsId, extractXhsUrls } from "./xhsSdk.mjs";
 import { crawlXhs } from "./xhsCrawler.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
 import { resolveCookie } from "./xhsAuth.mjs";
@@ -115,7 +115,8 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
   const effectiveCookie = body.cookie || resolveCookie(rootDir, storage);
 
   for (const parsedUrl of parsedUrls) {
-    const existing = storage.findNoteBySourceUrl(parsedUrl);
+    const parsedNoteId = extractXhsId(parsedUrl);
+    const existing = parsedNoteId ? storage.findNoteByNoteId(parsedNoteId) || storage.findNoteBySourceUrl(parsedUrl) : storage.findNoteBySourceUrl(parsedUrl);
     if (existing && skip) {
       skipped.push(existing);
       continue;
@@ -125,7 +126,7 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
     jobs.push(jobId);
     try {
       const settings = envWithSettings(rootDir);
-      const cdpPort = settings.xhs.cdpPort || 0;
+      const cdpPort = effectiveCookie ? 0 : settings.xhs.cdpPort || 0;
       const notes = await crawlXhs(
         {
           url: parsedUrl,
@@ -200,7 +201,7 @@ export async function diagnose(rootDir, storage) {
   const { readXhsCookie, checkCookieValid, decryptCookie } = await import("./xhsAuth.mjs");
   const cookieRaw = readXhsCookie(rootDir);
   if (!cookieRaw) {
-    result.channels.cookie = { status: "not_found", detail: "未找到 Cookie 文件", suggestion: "请通过「账号管理」扫码登录或粘贴 Cookie" };
+    result.channels.cookie = { status: "not_found", detail: "未找到 Cookie 文件", suggestion: "请通过「账号管理」打开专用浏览器绑定，或手动粘贴完整 Cookie" };
     result.suggestions.push("未找到小红书 Cookie，请先绑定账号。");
   } else {
     const check = await checkCookieValid(rootDir, cookieRaw);
@@ -208,11 +209,11 @@ export async function diagnose(rootDir, storage) {
     result.channels.cookie = {
       status: check.valid ? "ok" : "invalid",
       detail: check.valid ? `有效，${fields} 个字段${check.nickname ? "，用户：" + check.nickname : ""}` : `无效：${check.reason}`,
-      suggestion: check.valid ? "" : "Cookie 已过期，请重新扫码登录",
+      suggestion: check.valid ? "" : "Cookie 已过期，请重新打开专用浏览器绑定或更新完整 Cookie",
       nickname: check.nickname || "",
       fields
     };
-    if (!check.valid) result.suggestions.push(`Cookie 无效（${check.reason}），请重新扫码登录。`);
+    if (!check.valid) result.suggestions.push(`Cookie 无效（${check.reason}），请重新打开专用浏览器绑定或更新完整 Cookie。`);
   }
 
   // 2. HTTP 快速路径检测

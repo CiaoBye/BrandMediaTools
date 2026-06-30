@@ -3,8 +3,14 @@ import { existsSync, mkdirSync, readFileSync, rmSync, rmdirSync } from "node:fs"
 import path from "node:path";
 import { now, fromJson, toJson } from "./db.mjs";
 import { envWithSettings } from "../settings.mjs";
+import { extractXhsId } from "../xhsSdk.mjs";
 
 export function createNoteStore(db, rootDir) {
+  // Migration: add ip_location, last_update_time, cover_url columns
+  try { db.exec("ALTER TABLE notes ADD COLUMN ip_location TEXT"); } catch {}
+  try { db.exec("ALTER TABLE notes ADD COLUMN last_update_time TEXT"); } catch {}
+  try { db.exec("ALTER TABLE notes ADD COLUMN cover_url TEXT"); } catch {}
+
   const _ = (sql) => db.prepare(sql);
 
   function hydrateNoteWith(row, assets, analysis) {
@@ -17,6 +23,7 @@ export function createNoteStore(db, rootDir) {
       visualStyle: row.visual_style, tags: fromJson(row.tags, []), metrics: fromJson(row.metrics, {}),
       raw: fromJson(row.raw, {}), status: row.status, reviewReason: row.review_reason,
       libraryType: row.library_type, scriptDirection: row.script_direction,
+      ipLocation: row.ip_location || null, lastUpdateTime: row.last_update_time || null, coverUrl: row.cover_url || null,
       assets: assets, analysis: analysis
     };
   }
@@ -95,20 +102,31 @@ export function createNoteStore(db, rootDir) {
       };
     },
     findNoteBySourceUrl(sourceUrl) {
-      const row = _("SELECT * FROM notes WHERE source_url = ?").get(sourceUrl);
+      const noteId = extractXhsId(sourceUrl || "");
+      const row = noteId
+        ? _("SELECT * FROM notes WHERE (note_id = ? OR source_url = ?)").get(noteId, sourceUrl)
+        : _("SELECT * FROM notes WHERE (source_url = ?)").get(sourceUrl);
+      return row ? hydrateNote(row) : null;
+    },
+    findNoteByNoteId(noteId) {
+      if (!noteId) return null;
+      const row = _("SELECT * FROM notes WHERE note_id = ?").get(noteId);
       return row ? hydrateNote(row) : null;
     },
 
     upsertNote(note) {
-      const existing = _("SELECT * FROM notes WHERE source_url = ?").get(note.sourceUrl);
+      const canonicalNoteId = note.noteId || extractXhsId(note.sourceUrl || "");
+      const existing = canonicalNoteId
+        ? _("SELECT * FROM notes WHERE (note_id = ? OR source_url = ?)").get(canonicalNoteId, note.sourceUrl)
+        : _("SELECT * FROM notes WHERE (source_url = ?)").get(note.sourceUrl);
       const id = existing?.id || randomUUID();
       const time = now();
       if (existing) {
-        _(`UPDATE notes SET note_id = ?, account_id = ?, brand = ?, author_name = ?, author_id = ?, title = ?, description = ?, published_at = ?, content_type = ?, marketing_goal = ?, selling_points = ?, visual_style = ?, tags = ?, metrics = ?, raw = ?, status = ?, review_reason = ?, library_type = ? WHERE id = ?`)
-          .run(note.noteId || existing.note_id || "", note.accountId || existing.account_id || null, note.brand || existing.brand || "", note.authorName || existing.author_name || "", note.authorId || existing.author_id || "", note.title || existing.title || "", note.description || existing.description || "", note.publishedAt || existing.published_at || "", note.contentType || existing.content_type || "", note.marketingGoal || existing.marketing_goal || "", toJson(note.sellingPoints, fromJson(existing.selling_points, [])), note.visualStyle || existing.visual_style || "", toJson(note.tags, fromJson(existing.tags, [])), toJson(note.metrics, fromJson(existing.metrics, {})), toJson(note.raw, fromJson(existing.raw, {})), note.status || existing.status || "已入库", note.reviewReason || existing.review_reason || "", note.libraryType || existing.library_type || null, id);
+        _(`UPDATE notes SET note_id = ?, account_id = ?, brand = ?, author_name = ?, author_id = ?, title = ?, description = ?, published_at = ?, content_type = ?, marketing_goal = ?, selling_points = ?, visual_style = ?, tags = ?, metrics = ?, raw = ?, status = ?, review_reason = ?, library_type = ?, ip_location = ?, last_update_time = ?, cover_url = ? WHERE id = ?`)
+          .run(canonicalNoteId || existing.note_id || "", note.accountId || existing.account_id || null, note.brand || existing.brand || "", note.authorName || existing.author_name || "", note.authorId || existing.author_id || "", note.title || existing.title || "", note.description || existing.description || "", note.publishedAt || existing.published_at || "", note.contentType || existing.content_type || "", note.marketingGoal || existing.marketing_goal || "", toJson(note.sellingPoints, fromJson(existing.selling_points, [])), note.visualStyle || existing.visual_style || "", toJson(note.tags, fromJson(existing.tags, [])), toJson(note.metrics, fromJson(existing.metrics, {})), toJson(note.raw, fromJson(existing.raw, {})), note.status || existing.status || "已入库", note.reviewReason || existing.review_reason || "", note.libraryType || existing.library_type || null, note.ipLocation || existing.ip_location || null, note.lastUpdateTime || existing.last_update_time || null, note.coverUrl || existing.cover_url || null, id);
       } else {
-        _(`INSERT INTO notes (id, platform, source_url, note_id, account_id, brand, author_name, author_id, title, description, published_at, collected_at, content_type, marketing_goal, selling_points, visual_style, tags, metrics, raw, status, review_reason, library_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-          .run(id, note.platform || "小红书", note.sourceUrl, note.noteId || "", note.accountId || null, note.brand || "", note.authorName || "", note.authorId || "", note.title || "", note.description || "", note.publishedAt || "", time, note.contentType || "", note.marketingGoal || "", toJson(note.sellingPoints, []), note.visualStyle || "", toJson(note.tags, []), toJson(note.metrics, {}), toJson(note.raw, {}), note.status || "已入库", note.reviewReason || "", note.libraryType || null);
+        _(`INSERT INTO notes (id, platform, source_url, note_id, account_id, brand, author_name, author_id, title, description, published_at, collected_at, content_type, marketing_goal, selling_points, visual_style, tags, metrics, raw, status, review_reason, library_type, ip_location, last_update_time, cover_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(id, note.platform || "小红书", note.sourceUrl, canonicalNoteId || "", note.accountId || null, note.brand || "", note.authorName || "", note.authorId || "", note.title || "", note.description || "", note.publishedAt || "", time, note.contentType || "", note.marketingGoal || "", toJson(note.sellingPoints, []), note.visualStyle || "", toJson(note.tags, []), toJson(note.metrics, {}), toJson(note.raw, {}), note.status || "已入库", note.reviewReason || "", note.libraryType || null, note.ipLocation || null, note.lastUpdateTime || null, note.coverUrl || null);
       }
       return store.getNote(id);
     },

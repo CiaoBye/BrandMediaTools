@@ -1,14 +1,15 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+﻿import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { envWithSettings } from "../settings.mjs";
 import { readXhsCookie } from "../xhsAuth.mjs";
+import { URL } from "node:url";
 import {
   extractXhsId, isAccountUrl, classifyUrl, cleanAssetUrl, watermarkStatus,
-  normalizeStructuredAssets, bestImageUrl, bestStreamUrl,
+  normalizeStructuredAssets, bestImageUrl, bestImageUrls, bestStreamUrl, bestVideoStreams,
   isLoginPage, isBlockedPage, isCaptchaPage, isUnavailablePage,
   normalizeIndexes, filterByIndexes, dedupeVideos,
   attachResponseCollector, collectAssetsFromBodies,
-  sleep, isUiAsset, uniqueByUrl, parseInitState
+  sleep, isUiAsset, uniqueByUrl, parseInitState, extractImageToken, buildCdnImageUrl, extractCoverImage
 } from "../xhsSdk.mjs";
 
 function uniqueByAssets(items) {
@@ -172,86 +173,111 @@ async function extractNote(page, input, networkBodies = [], videoPreference = "r
   };
 }
 
-async function fetchNoteViaHttp(input, options = {}) {
-  const rootDir = options.rootDir || process.cwd();
-  const settings = envWithSettings(rootDir);
-  const videoPreference = options.videoPreference || settings.download.videoPreference || "resolution";
-  const videoMinHeight = options.videoMinHeight || settings.download.videoMinHeight || 0;
-  let cookie = options.cookie || input.cookie || readXhsCookie(rootDir) || "";
-
-  let url = input.url;
-  if (!url) return null;
-
-  // 1. 短链 HEAD 极速预检解析
-  if (url.includes("xhslink.com")) {
-    const headController = new AbortController();
-    const headTimer = setTimeout(() => headController.abort(), 3000);
-    try {
-      const headRes = await fetch(url, {
-        method: "HEAD",
-        redirect: "manual",
-        signal: headController.signal
-      });
-      const location = headRes.headers.get("location");
-      if (location) {
-        // 兼容相对路径重定向（如 /explore/xxxxx）
-        url = location.startsWith("http") ? location : new URL(location, "https://www.xiaohongshu.com").href;
-      }
-    } catch (headErr) {
-      console.warn("[fetchNoteViaHttp] HEAD 短链预解析失败:", headErr.message);
-    } finally {
-      clearTimeout(headTimer);
-    }
+/**
+ * Extract og:image and og:video from HTML as last-resort fallback assets.
+ */
+function extractHtmlFallbackAssets(html, noteId) {
+  if (!html || typeof html !== "string") return { note: null, assets: [] };
+  const assets = [];
+  function getContent(prop) {
+    const re1 = new RegExp("<meta[^>]+(?:property|name)=\"" + prop + "\"[^>]+content=\"([^\"]*)\"");
+    const m1 = html.match(re1);
+    if (m1) return m1[1];
+    const re2 = new RegExp("<meta[^>]+content=\"([^\"]*)\"" + "[^>]+(?:property|name)=\"" + prop + "\"");
+    const m2 = html.match(re2);
+    return m2 ? m2[1] : "";
   }
+  const ogImage = getContent("og:image");
+  const ogVideo = getContent("og:video");
+  const ogTitle = getContent("og:title");
+  const ogDesc = getContent("og:description");
+  const ogUrl = getContent("og:url");
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
+  if (ogImage) {
+    assets.push({
+      kind: "image", url: cleanAssetUrl(ogImage), sourceUrl: cleanAssetUrl(ogImage),
+      width: null, height: null, resolution: "",
+      watermarkStatus: watermarkStatus(ogImage),
+      source: "html:og:image", imageIndex: null, fileId: "", traceId: "",
+      livePhoto: false, pairedImageIndex: null, bitrate: null, fileSize: null
+    });
+  }
+  if (ogVideo) {
+    assets.push({
+      kind: "video", url: cleanAssetUrl(ogVideo), sourceUrl: cleanAssetUrl(ogVideo),
+      width: null, height: null, resolution: "",
+      watermarkStatus: watermarkStatus(ogVideo),
+      source: "html:og:video", fileId: "", traceId: "",
+      livePhoto: false, imageIndex: null, pairedImageIndex: null, bitrate: null, fileSize: null
+    });
+  }
+  const noteMeta = {};
+  if (ogTitle) noteMeta.title = ogTitle;
+  if (ogDesc) noteMeta.description = ogDesc;
+  if (ogUrl) noteMeta.sourceUrl = ogUrl;
+  return { note: Object.keys(noteMeta).length ? noteMeta : null, assets };
+}
+
+/**
+ * Try to fetch note HTML with different URL formats for xsec_token resilience.
+ */
+async function tryFetchUrlVariants(baseUrl, noteId, headers, signal) {
+  const variants = [baseUrl];
+  if (!baseUrl.includes("xsec_token")) {
+    variants.push("https://www.xiaohongshu.com/discovery/item/" + noteId);
+  }
+  if (!baseUrl.includes("xsec_source")) {
+    const sep = baseUrl.includes("?") ? "&" : "?";
+    variants.push(baseUrl + sep + "xsec_source=pc_note");
+  }
+  for (const variantUrl of variants) {
+    try {
+      const resp = await fetch(variantUrl, { headers, redirect: "follow", signal });
+      if (resp.status !== 200) continue;
+      const html = await resp.text();
+      if (!html || html.includes("安全限制") || html.includes("手机号登录") || html.includes("你访问的页面不见了")) continue;
+      return { html, url: variantUrl };
+    } catch { continue; }
+  }
+  return null;
+}
+
+
+async function fetchNoteViaHttp(input$1, options$1 = {}) {
+  const rootDir$1 = options$1.rootDir || process.cwd();
+  const settings = envWithSettings(rootDir$1);
+  const videoPreference$1 = options$1.videoPreference || settings.download.videoPreference || "resolution";
+  const videoMinHeight$1 = options$1.videoMinHeight || settings.download.videoMinHeight || 0;
+  const cookie$1 = options$1.cookie || input$1.cookie || readXhsCookie(rootDir$1) || "";
+  let url$1 = input$1.url;
+  if (!url$1) return null;
+  if (url$1.includes("xhslink.com")) {
+    try {
+      const mod = await import("../xhsSdk.mjs");
+      const resolved = await mod.resolveShortLink(url$1);
+      if (resolved && resolved.finalUrl) {
+        url$1 = resolved.finalUrl;
+        console.log("[fetchNoteViaHttp] 短链解析成功:", url$1, "(" + resolved.hops + " hops)");
+      }
+    } catch (e) { console.warn("[fetchNoteViaHttp] 短链预解析失败:", e.message); }
+  }
+  const controller$1 = new AbortController();
+  const timer$1 = setTimeout(() => controller$1.abort(), 15000);
   try {
-    const fetchWithParams = async (useCookie) => {
+    const noteId$1 = extractXhsId(url$1) || "";
+    const fetchWithParams$1 = async (useCookie, mode) => {
       const headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
         Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-        Referer: "https://www.xiaohongshu.com/",
+        Referer: "https://www.xiaohongshu.com/"
       };
       if (useCookie) headers.Cookie = useCookie;
-      const res = await fetch(url, {
-        headers,
-        redirect: "follow",
-        signal: controller.signal,
-      });
-      const html = await res.text();
-      return { status: res.status, html };
+      const res = await fetch(url$1, { headers, redirect: "follow", signal: controller$1.signal });
+      return { status: res.status, html: await res.text(), mode };
     };
-
-    let { status: fetchStatus, html } = await fetchWithParams(cookie);
-
-    // 2. 双重 WAF 风控裸奔尝试：若请求被安全限制或登录拦截，且之前带了 Cookie，则尝试清除 Cookie 裸跑一次
-    const isBlocked = (code, text) => {
-      return code !== 200 || text.includes("安全限制") || text.includes("手机号登录");
-    };
-
-    if (isBlocked(fetchStatus, html) && cookie) {
-      console.log("[fetchNoteViaHttp] 携带 Cookie 请求受阻，自动清除 Cookie 尝试免登录裸跑重试...");
-      try {
-        const retryResult = await fetchWithParams("");
-        if (!isBlocked(retryResult.status, retryResult.html)) {
-          fetchStatus = retryResult.status;
-          html = retryResult.html;
-          console.log("[fetchNoteViaHttp] 免登录裸跑重试成功！已成功绕过风控拦截。");
-        }
-      } catch (retryErr) {
-        console.warn("[fetchNoteViaHttp] 免登录裸跑重试发生网络错误:", retryErr.message);
-      }
-    }
-
-    if (fetchStatus !== 200) return null;
-    if (html.includes("安全限制") || html.includes("手机号登录") || html.includes("你访问的页面不见了") || html.includes("当前笔记暂时无法浏览")) return null;
-
-    const state = parseInitState(html);
-    if (!state) return null;
-
-    const getNote = () => {
+    const isBlocked$1 = (code, text) => code !== 200 || text.includes("安全限制") || text.includes("手机号登录");
+    const getNote$1 = (state) => {
       const pc = state?.note?.noteDetailMap;
       if (pc) {
         const entries = Object.values(pc).map(n => n?.note || n).filter(Boolean);
@@ -262,92 +288,195 @@ async function fetchNoteViaHttp(input, options = {}) {
       if (mobile?.title) return mobile;
       return null;
     };
-    const noteData = getNote();
-    if (!noteData) return null;
-
-    const imageList = Array.isArray(noteData.imageList) ? noteData.imageList : [];
-    const hasVideo = Boolean(noteData.video);
-    const assets = [];
-    for (let i = 0; i < imageList.length; i++) {
-      const img = imageList[i];
-      const imgUrl = cleanAssetUrl(bestImageUrl(img));
-      if (imgUrl) {
-        assets.push({
-          kind: "image", url: imgUrl, sourceUrl: imgUrl,
-          width: img.width || null, height: img.height || null,
-          resolution: img.width && img.height ? `${img.width}x${img.height}` : "",
-          watermarkStatus: watermarkStatus(imgUrl),
-          source: "http:init-state", imageIndex: i + 1,
-          fileId: img.fileId || "", traceId: img.traceId || "",
-          livePhoto: Boolean(img.livePhoto), pairedImageIndex: null, bitrate: null, fileSize: null,
+    const buildFallbackNoteResult$1 = (ogAssets, ogNote, mode) => {
+      const contentType$1 = ogAssets.some(a => a.kind === "video") ? "视频笔记" : ogAssets.some(a => a.kind === "image") ? "图文笔记" : "待复核";
+      const status$1 = ogAssets.length ? "已入库" : "需人工复核";
+      return {
+        platform: "小红书", sourceUrl: url$1, noteId: noteId$1,
+        accountId: input$1.accountId || null, brand: input$1.brand || "",
+        title: ogNote?.title || "未命名笔记", description: ogNote?.description || "",
+        authorName: "", authorId: "", publishedAt: "",
+        contentType: contentType$1, marketingGoal: "", sellingPoints: [], visualStyle: "",
+        tags: [], metrics: {}, status: status$1,
+        ipLocation: null, lastUpdateTime: null, cover: null, shareInfo: null,
+        reviewReason: status$1 === "需人工复核" ? "公开页 HTML 路径未发现可直接访问的资源" : "",
+        raw: { source: "html:fallback", acquisitionMode: mode, authUsed: mode === "cookie", noteId: noteId$1, imageCount: 0, assetCount: ogAssets.length },
+        assets: ogAssets.map((a) => ({ ...a, sourceUrl: a.sourceUrl || a.url || "" }))
+      };
+    };
+    async function tryMultiUrlFallback$1(useCookie, mode) {
+      const headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        Referer: "https://www.xiaohongshu.com/"
+      };
+      if (useCookie) headers.Cookie = useCookie;
+      const result = await tryFetchUrlVariants(url$1, noteId$1, headers, controller$1.signal);
+      if (!result) return null;
+      url$1 = result.url;
+      return { status: 200, html: result.html, mode };
+    }
+    const buildNoteResult$1 = (noteData, mode) => {
+      const imageList = Array.isArray(noteData.imageList) ? noteData.imageList : [];
+      const hasVideo$1 = Boolean(noteData.video);
+      const assets$1 = [];
+      for (let i = 0; i < imageList.length; i++) {
+        const img = imageList[i];
+        const imgUrl = cleanAssetUrl(bestImageUrl(img));
+        if (imgUrl) {
+          assets$1.push({
+            kind: "image", url: imgUrl, sourceUrl: imgUrl,
+            width: img.width || null, height: img.height || null,
+            resolution: img.width && img.height ? img.width + "x" + img.height : "",
+            cdnToken: extractImageToken(imgUrl) || "",
+            watermarkStatus: watermarkStatus(imgUrl),
+            source: "http:init-state", imageIndex: i + 1,
+            fileId: img.fileId || "", traceId: img.traceId || "",
+            livePhoto: Boolean(img.livePhoto), pairedImageIndex: null, bitrate: null, fileSize: null
+          });
+        }
+        if (img.livePhoto) {
+          const streamUrl = cleanAssetUrl(bestStreamUrl(img.stream));
+          if (streamUrl) {
+            assets$1.push({
+              kind: "livePhoto", url: streamUrl, sourceUrl: streamUrl,
+              width: img.width || null, height: img.height || null,
+              resolution: img.width && img.height ? img.width + "x" + img.height : "",
+              watermarkStatus: watermarkStatus(streamUrl),
+              source: "http:init-state", imageIndex: i + 1, pairedImageIndex: i + 1,
+              fileId: img.fileId || "", traceId: img.traceId || "",
+              livePhoto: true, bitrate: null, fileSize: null
+            });
+          }
+        }
+      }
+      if (hasVideo$1 && noteData.video && typeof noteData.video === "object") {
+        const streamAssets = extractVideoStreamAssets(noteData.video.media?.stream || noteData.video.consumerInfo?.stream);
+        const consumer = noteData.video.consumer || noteData.video.consumerInfo || {};
+        if (consumer.originVideoKey) {
+          streamAssets.unshift({
+            kind: "video", url: "https://sns-video-bd.xhscdn.com/" + consumer.originVideoKey, sourceUrl: "https://sns-video-bd.xhscdn.com/" + consumer.originVideoKey,
+            width: null, height: null, resolution: "", bitrate: null, fileSize: null,
+            watermarkStatus: watermarkStatus("https://sns-video-bd.xhscdn.com/" + consumer.originVideoKey),
+            source: "http:originVideoKey", fileId: "", traceId: "", livePhoto: false, imageIndex: null, pairedImageIndex: null
+          });
+        }
+        const deduped = dedupeVideos(streamAssets, videoPreference$1);
+        const filtered = deduped.filter(v => { if (!videoMinHeight$1 || videoMinHeight$1 <= 0) return true; return Number(v.height || 0) >= videoMinHeight$1; });
+        assets$1.push(...filtered.slice(0, 3));
+      }
+      const coverAsset$1 = extractCoverImage(noteData);
+      if (coverAsset$1 && coverAsset$1.url) {
+        assets$1.push({
+          kind: "cover", url: coverAsset$1.url, sourceUrl: coverAsset$1.url,
+          width: coverAsset$1.width || null, height: coverAsset$1.height || null,
+          resolution: coverAsset$1.width && coverAsset$1.height ? coverAsset$1.width + "x" + coverAsset$1.height : "",
+          watermarkStatus: watermarkStatus(coverAsset$1.url),
+          source: coverAsset$1.source || "http:cover", imageIndex: null, fileId: "", traceId: "",
+          livePhoto: false, pairedImageIndex: null, bitrate: null, fileSize: null
         });
       }
-      if (img.livePhoto) {
-        const streamUrl = cleanAssetUrl(bestStreamUrl(img.stream));
-        if (streamUrl) {
-          assets.push({
-            kind: "livePhoto", url: streamUrl, sourceUrl: streamUrl,
-            width: img.width || null, height: img.height || null,
-            resolution: img.width && img.height ? `${img.width}x${img.height}` : "",
-            watermarkStatus: watermarkStatus(streamUrl),
-            source: "http:init-state", imageIndex: i + 1, pairedImageIndex: i + 1,
-            fileId: img.fileId || "", traceId: img.traceId || "",
-            livePhoto: true, bitrate: null, fileSize: null,
-          });
+      const authorName$1 = noteData.user?.nickname || noteData.user?.nickName || "";
+      const authorId$1 = noteData.user?.userId || noteData.user?.user_id || "";
+      const metrics$1 = noteData.interactInfo || {};
+      const hasLivePhoto$1 = assets$1.some((a) => a.kind === "livePhoto");
+      const contentType$1 = hasLivePhoto$1 ? "Live图文" : hasVideo$1 ? "视频笔记" : imageList.length ? "图文笔记" : "待复核";
+      const status$1 = assets$1.length ? "已入库" : "需人工复核";
+      return {
+        platform: "小红书", sourceUrl: url$1, noteId: noteId$1,
+        accountId: input$1.accountId || null, brand: input$1.brand || "",
+        title: noteData.title || "未命名笔记", description: noteData.desc || "",
+        authorName: authorName$1, authorId: authorId$1,
+        publishedAt: noteData.time ? new Date(Number(noteData.time)).toISOString() : "",
+        contentType: contentType$1, marketingGoal: "", sellingPoints: [], visualStyle: "",
+        tags: Array.from(new Set([...(input$1.tags || []), ...(Array.isArray(noteData.tagList) ? noteData.tagList.map(t => t.name || t).filter(Boolean) : [])])),
+        metrics: metrics$1, status: status$1,
+        reviewReason: status$1 === "需人工复核" ? "公开页 HTML 路径未发现可直接访问的资源" : "",
+        ipLocation: noteData.ipLocation || null,
+        lastUpdateTime: noteData.lastUpdateTime ? new Date(Number(noteData.lastUpdateTime)).toISOString() : null,
+        cover: coverAsset$1 ? { url: coverAsset$1.url, width: coverAsset$1.width, height: coverAsset$1.height } : null,
+        shareInfo: noteData.shareInfo || null,
+        raw: { source: "http:init-state", acquisitionMode: mode, authUsed: mode === "cookie", noteId: noteData.noteId, imageCount: imageList.length, assetCount: assets$1.length },
+        assets: assets$1.map((a) => ({ ...a, sourceUrl: a.sourceUrl || a.url || "" }))
+      };
+    };
+    const attempts$1 = [{ mode: "public", cookie: "" }];
+    if (cookie$1) attempts$1.push({ mode: "cookie", cookie: cookie$1 });
+    let bestParsed$1 = null;
+    for (const attempt of attempts$1) {
+      let response;
+      try {
+        response = await fetchWithParams$1(attempt.cookie, attempt.mode);
+      } catch (err) {
+        console.warn("[fetchNoteViaHttp] " + (attempt.mode === "public" ? "公开页" : "Cookie") + " 请求失败:", err.message);
+        continue;
+      }
+      const { status: fs, html: html2, mode: mode2 } = response;
+      if (fs !== 200) continue;
+      if (html2.includes("安全限制") || html2.includes("手机号登录") || html2.includes("你访问的页面不见了") || html2.includes("当前笔记暂时无法浏览") || isBlocked$1(fs, html2)) continue;
+      const state = parseInitState(html2);
+      if (!state) continue;
+      const noteData = getNote$1(state);
+      if (!noteData) continue;
+      const parsed = buildNoteResult$1(noteData, mode2);
+      if (parsed.assets.length) {
+        console.log("[fetchNoteViaHttp] " + (mode2 === "public" ? "公开页 HTML" : "Cookie 兜底 HTML") + " 解析成功。");
+        return [parsed];
+      }
+      bestParsed$1 = bestParsed$1 || parsed;
+    }
+    if (!bestParsed$1 || !bestParsed$1.assets?.length) {
+      for (const attempt of attempts$1) {
+        let fallbackResp;
+        try {
+          fallbackResp = await tryMultiUrlFallback$1(attempt.cookie, attempt.mode);
+        } catch (e) { continue; }
+        if (!fallbackResp) continue;
+        const { html: fhtml, mode: fmode } = fallbackResp;
+        const fstate = parseInitState(fhtml);
+        if (fstate) {
+          const fdata = getNote$1(fstate);
+          if (fdata) {
+            const fparsed = buildNoteResult$1(fdata, fmode);
+            if (fparsed.assets.length) {
+              console.log("[fetchNoteViaHttp] URL 形态降级解析成功:", fmode);
+              return [fparsed];
+            }
+            bestParsed$1 = bestParsed$1 || fparsed;
+          }
+        }
+        const ogFallback = extractHtmlFallbackAssets(fhtml, noteId$1);
+        if (ogFallback.assets.length) {
+          if (bestParsed$1 && !bestParsed$1.assets.length) {
+            const merged = { ...bestParsed$1 };
+            merged.assets = [...bestParsed$1.assets, ...ogFallback.assets];
+            merged.status = "已入库";
+            merged.reviewReason = "";
+            merged.raw.acquisitionMode = fmode + ":og-fallback";
+            if (ogFallback.note?.title && !merged.title) merged.title = ogFallback.note.title;
+            if (ogFallback.note?.description && !merged.description) merged.description = ogFallback.note.description;
+            console.log("[fetchNoteViaHttp] og:image/og:video 兜底素材合并成功:", fmode);
+            return [merged];
+          }
+          const ogResult = buildFallbackNoteResult$1(ogFallback.assets, ogFallback.note, fmode + ":og-fallback");
+          console.log("[fetchNoteViaHttp] og:image/og:video 兜底解析成功:", fmode);
+          return [ogResult];
         }
       }
     }
-    if (hasVideo && noteData.video && typeof noteData.video === "object") {
-      const streamAssets = extractVideoStreamAssets(noteData.video.media?.stream || noteData.video.consumerInfo?.stream);
-      const consumer = noteData.video.consumer || noteData.video.consumerInfo || {};
-      if (consumer.originVideoKey) {
-        const directUrl = `https://sns-video-bd.xhscdn.com/${consumer.originVideoKey}`;
-        streamAssets.unshift({
-          kind: "video", url: directUrl, sourceUrl: directUrl,
-          width: null, height: null, resolution: "",
-          bitrate: null, fileSize: null,
-          watermarkStatus: watermarkStatus(directUrl),
-          source: "http:originVideoKey",
-          fileId: "", traceId: "", livePhoto: false, imageIndex: null, pairedImageIndex: null,
-        });
-      }
-      const deduped = dedupeVideos(streamAssets, videoPreference);
-      const filtered = deduped.filter(v => {
-        if (!videoMinHeight || videoMinHeight <= 0) return true;
-        return Number(v.height || 0) >= videoMinHeight;
-      });
-      assets.push(...filtered.slice(0, 1));
+    if (bestParsed$1 && !bestParsed$1.assets?.length && bestParsed$1.raw?.bodyText) {
+      const ogFallback = extractHtmlFallbackAssets(bestParsed$1.raw.bodyText, noteId$1);
+      if (ogFallback.assets.length) bestParsed$1.assets.push(...ogFallback.assets);
     }
-
-    const authorName = noteData.user?.nickname || noteData.user?.nickName || "";
-    const authorId = noteData.user?.userId || noteData.user?.user_id || "";
-    const metrics = noteData.interactInfo || {};
-    const title = noteData.title || "未命名笔记";
-    const hasLivePhoto = assets.some((asset) => asset.kind === "livePhoto");
-    // 修复：纯视频笔记（无 imageList）时正确标记为视频笔记，而非待复核
-    const contentType = hasLivePhoto ? "Live图文" : hasVideo ? "视频笔记" : imageList.length ? "图文笔记" : "待复核";
-    const status = assets.length ? "已入库" : "需人工复核";
-
-    return [{
-      platform: "小红书", sourceUrl: url, noteId: extractXhsId(url),
-      accountId: input.accountId || null, brand: input.brand || "",
-      title, description: noteData.desc || "",
-      authorName, authorId,
-      publishedAt: noteData.time ? new Date(Number(noteData.time)).toISOString() : "",
-      contentType,
-      marketingGoal: "", sellingPoints: [], visualStyle: "",
-      tags: Array.from(new Set([...(input.tags || []), ...(Array.isArray(noteData.tagList) ? noteData.tagList.map(t => t.name || t).filter(Boolean) : [])])),
-      metrics, status,
-      reviewReason: status === "需人工复核" ? "HTTP快速路径未发现可直接访问的资源" : "",
-      raw: { source: "http:init-state", noteId: noteData.noteId, imageCount: imageList.length, assetCount: assets.length },
-      assets: assets.map((asset) => ({ ...asset, sourceUrl: asset.sourceUrl || asset.url || "" })),
-    }];
+    return bestParsed$1 ? [bestParsed$1] : null;
   } catch (e) {
     console.warn("[fetchNoteViaHttp] 请求失败:", e.message);
     return null;
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer$1);
   }
 }
 
-export { uniqueByAssets, extractVideoStreamAssets, hasUsableAssets, extractNote, fetchNoteViaHttp };
+
+export { uniqueByAssets, extractVideoStreamAssets, hasUsableAssets, extractNote, fetchNoteViaHttp, extractHtmlFallbackAssets, tryFetchUrlVariants };

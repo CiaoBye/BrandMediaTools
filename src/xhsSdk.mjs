@@ -1,4 +1,4 @@
-import path from "node:path";
+﻿import path from "node:path";
 import { spawn, execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync, writeFileSync, rmSync } from "node:fs";
@@ -169,18 +169,23 @@ export function scoreVideo(asset, preference = "resolution") {
   const protocol = url.startsWith("https://") ? 1000 : 0;
   const primaryHost = url.includes("sns-video") ? 500 : 0;
   const wmPenalty = url.includes("watermark") || url.includes("wm_") || url.includes("/wm/") ? -100000 : 0;
+  // Codec-aware weights: prefer modern codecs for better quality-per-bit
+  const codecStr = (asset.codec || "").toLowerCase() + " " + url;
+  let codecBonus = 0;
+  if (/av1/i.test(codecStr)) codecBonus = 8000;
+  else if (/h265|hevc|hev1/i.test(codecStr)) codecBonus = 5000;
   if (preference === "bitrate") {
     const bitrate = asset.bitrate || Number(url.match(/bitrate[=_/](\d+)/i)?.[1] || 0);
-    return bitrate + protocol + primaryHost + wmPenalty;
+    return bitrate + protocol + primaryHost + wmPenalty + codecBonus;
   }
   if (preference === "size") {
     const fileSize = asset.fileSize || 0;
-    return (fileSize > 0 ? -fileSize : 0) + protocol + wmPenalty;
+    return (fileSize > 0 ? -fileSize : 0) + protocol + wmPenalty + codecBonus;
   }
   const area = (asset.width || 0) * (asset.height || 0);
   const quality = /1080|1920|2160|4k|uhd/.test(url) ? 10000000 : 0;
   const bitrate = Math.min(asset.bitrate || 0, 9999);
-  return area + quality + bitrate + protocol + primaryHost + wmPenalty;
+  return area + quality + bitrate + protocol + primaryHost + wmPenalty + codecBonus;
 }
 
 function videoIdentity(url) {
@@ -220,11 +225,22 @@ export function bestImageUrl(image) {
   if (image.url_pre) candidates.push({ url: image.url_pre, w: image.width || 0, h: image.height || 0 });
   if (image.url) candidates.push({ url: image.url, w: image.width || 0, h: image.height || 0 });
   const infoList = Array.isArray(image.infoList) ? image.infoList : Array.isArray(image.info_list) ? image.info_list : [];
+  // Filter out thumbnail scenes (WB_PRV = preview, CRD_PRV = card preview)
+  const thumbScenes = new Set(["WB_PRV", "CRD_PRV"]);
+  const preferScenes = new Set(["WB_DFT", "WB_SEL"]);
   for (const item of infoList) {
-    if (item?.url) candidates.push({ url: item.url, w: item.width || 0, h: item.height || 0 });
+    if (!item?.url) continue;
+    const scene = item.imageScene || item.image_scene || "";
+    if (thumbScenes.has(scene)) continue; // skip thumbnails
+    const sceneBonus = preferScenes.has(scene) ? 1 : 0;
+    candidates.push({ url: item.url, w: item.width || 0, h: item.height || 0, sceneBonus });
   }
   if (!candidates.length) return "";
   candidates.sort((a, b) => {
+    // Preferred scenes first
+    const sA = a.sceneBonus || 0;
+    const sB = b.sceneBonus || 0;
+    if (sA !== sB) return sB - sA;
     const areaA = a.w * a.h;
     const areaB = b.w * b.h;
     if (areaA !== areaB) return areaB - areaA;
@@ -246,6 +262,101 @@ export function bestStreamUrl(stream) {
     }
   }
   return "";
+}
+
+/**
+ * Return ordered list of image URL candidates (instead of single best).
+ * Each candidate includes original URL and CDN token direct link.
+ * @param {object} image - Image object from __INITIAL_STATE__
+ * @returns {Array<{url:string, cdnUrl:string, width:number, height:number, source:string, priority:number, watermarkStatus:string}>}
+ */
+export function bestImageUrls(image) {
+  if (!image || typeof image !== "object") return [];
+  const candidates = [];
+
+  if (image.urlDefault) candidates.push({ url: image.urlDefault, w: image.width || 0, h: image.height || 0, priority: 0, source: "urlDefault" });
+
+  const infoList = Array.isArray(image.infoList) ? image.infoList : Array.isArray(image.info_list) ? image.info_list : [];
+  const thumbScenes = new Set(["WB_PRV", "CRD_PRV"]);
+  const preferScenes = new Set(["WB_DFT", "WB_SEL"]);
+
+  for (const item of infoList) {
+    if (!item?.url) continue;
+    const scene = item.imageScene || item.image_scene || "";
+    if (thumbScenes.has(scene)) continue;
+    const scenePriority = preferScenes.has(scene) ? -1 : 1;
+    candidates.push({ url: item.url, w: item.width || 0, h: item.height || 0, priority: scenePriority, source: "infoList:" + (scene || "unknown") });
+  }
+
+  if (image.urlPre) candidates.push({ url: image.urlPre, w: image.width || 0, h: image.height || 0, priority: 2, source: "urlPre" });
+  if (image.url_pre) candidates.push({ url: image.url_pre, w: image.width || 0, h: image.height || 0, priority: 2, source: "url_pre" });
+  if (image.url) candidates.push({ url: image.url, w: image.width || 0, h: image.height || 0, priority: 3, source: "url" });
+
+  if (!candidates.length) return [];
+
+  candidates.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    const areaA = a.w * a.h;
+    const areaB = b.w * b.h;
+    if (areaA !== areaB) return areaB - areaA;
+    const wmA = watermarkStatus(a.url) === "原始候选" ? 0 : 1;
+    const wmB = watermarkStatus(b.url) === "原始候选" ? 0 : 1;
+    return wmA - wmB;
+  });
+
+  return candidates.map(c => {
+    const token = extractImageToken(c.url);
+    const cdnUrl = token ? buildCdnImageUrl(token) : "";
+    return {
+      url: c.url,
+      cdnUrl,
+      width: c.w,
+      height: c.h,
+      source: c.source,
+      priority: c.priority,
+      watermarkStatus: watermarkStatus(c.url)
+    };
+  }).filter(c => c.url);
+}
+
+/**
+ * Return full codec x resolution video stream matrix.
+ * Extracts all available encoding variants with fallback URLs.
+ * @param {object} stream - Video stream object
+ * @returns {Array<{codec:string, masterUrl:string, backupUrls:string[], url:string, width:number, height:number, resolution:string, bitrate:number, fileSize:number, fileId:string, traceId:string, watermarkStatus:string}>}
+ */
+export function bestVideoStreams(stream) {
+  if (!stream || typeof stream !== "object") return [];
+  const variants = [];
+  const codecOrder = ["h264", "h265", "h266", "av1"];
+
+  for (const codec of codecOrder) {
+    const codecVariants = Array.isArray(stream[codec]) ? stream[codec] : [];
+    for (const variant of codecVariants) {
+      if (!variant) continue;
+      const masterUrl = cleanAssetUrl(variant.masterUrl || variant.master_url || "");
+      const backupUrls = Array.isArray(variant.backupUrls) ? variant.backupUrls.map(v => cleanAssetUrl(v)).filter(Boolean) :
+                         Array.isArray(variant.backup_urls) ? variant.backup_urls.map(v => cleanAssetUrl(v)).filter(Boolean) : [];
+      if (!masterUrl && !backupUrls.length) continue;
+      const w = variant.width || variant.resolution?.width || null;
+      const h = variant.height || variant.resolution?.height || null;
+      variants.push({
+        codec,
+        masterUrl,
+        backupUrls,
+        url: masterUrl || backupUrls[0] || "",
+        width: w,
+        height: h,
+        resolution: w && h ? w + "x" + h : "",
+        bitrate: variant.bitrate || variant.videoBitrate || variant.bitRate || variant.bit_rate || null,
+        fileSize: variant.fileSize || variant.size || variant.file_size || null,
+        fileId: variant.fileId || "",
+        traceId: variant.traceId || "",
+        watermarkStatus: watermarkStatus(masterUrl || backupUrls[0] || ""),
+      });
+    }
+  }
+  return variants;
 }
 
 export function normalizeStructuredAssets(noteData) {
@@ -488,7 +599,7 @@ export async function launchCdpChrome(cdpPort, rootDir) {
       const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
       const contexts = browser.contexts();
       console.log(`[CDP] 已有 Chrome 连接至 :${cdpPort}`);
-      return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
+      return { browser, context: contexts[0] || await browser.newContext(), isCdp: true, launchedByTool: false };
     } catch { await sleep(500); }
   }
 
@@ -497,9 +608,7 @@ export async function launchCdpChrome(cdpPort, rootDir) {
   mkdirSync(profileDir, { recursive: true });
   const batPath = path.join(rootDir || process.cwd(), "data", ".cdp-launch.bat");
   const batContent = `@echo off
-taskkill /f /im "${path.basename(chromePath)}" >nul 2>&1
-ping -n 4 127.0.0.1 >nul
-start "" /min "${chromePath}" --remote-debugging-port=${cdpPort} --remote-allow-origins=* --user-data-dir="${profileDir}" --no-first-run --no-default-browser-check --disable-gpu
+start "" "${chromePath}" --remote-debugging-port=${cdpPort} --remote-allow-origins=* --user-data-dir="${profileDir}" --no-first-run --no-default-browser-check --disable-gpu
 `;
   writeFileSync(batPath, batContent, "utf8");
 
@@ -513,7 +622,7 @@ start "" /min "${chromePath}" --remote-debugging-port=${cdpPort} --remote-allow-
       const browser = await chromium.connectOverCDP(`http://127.0.0.1:${cdpPort}`);
       const contexts = browser.contexts();
       console.log(`[CDP] Chrome 已就绪 (${i + 1}s)`);
-      return { browser, context: contexts[0] || await browser.newContext(), isCdp: true };
+      return { browser, context: contexts[0] || await browser.newContext(), isCdp: true, launchedByTool: true };
     } catch { /* 等待中 */ }
   }
   throw new Error(`浏览器自动启动失败（30s 超时）。请关闭您的 Chrome 后手动运行以下命令，然后重试提取：\n  "${chromePath}" --remote-debugging-port=${cdpPort} --remote-allow-origins=* --user-data-dir="${profileDir}"`);
@@ -523,8 +632,10 @@ export async function createBrowser(rootDir, options = {}) {
   const { chromium } = await getPlaywright();
   const settings = envWithSettings(rootDir);
   const headless = options.headless ?? settings.xhs.headless;
-  const useCdp = options.cdpPort > 0 || settings.xhs.cdpPort > 0;
-  const cdpPort = options.cdpPort || settings.xhs.cdpPort || 0;
+  const cdpPort = Object.prototype.hasOwnProperty.call(options, "cdpPort")
+    ? Number(options.cdpPort || 0)
+    : Number(settings.xhs.cdpPort || 0);
+  const useCdp = cdpPort > 0;
 
   let browser, context, isCdp = false;
   let cdpConnected = false;
@@ -578,7 +689,7 @@ export function cleanupCdpChrome() {}
 export async function openXhsContext(rootDir, cookieOverride = "", optionOverrides = {}) {
   // 优先使用全局持久浏览器
   const globalCtx = getGlobalContext();
-  if (globalCtx) {
+  if (globalCtx && !String(cookieOverride || "").trim() && optionOverrides.useGlobal !== false) {
     // 包装一个 dummy close（不关闭全局上下文）
     const proxy = Object.create(globalCtx);
     proxy.close = async () => {};
@@ -651,8 +762,28 @@ export function parseInitState(html) {
   const braceEnd = inScript.lastIndexOf("}");
   if (braceStart < 0 || braceEnd < 0) return null;
   let jsonStr = inScript.slice(braceStart, braceEnd + 1);
+  // Standard cleanup: undefined→null, NaN→null
   jsonStr = jsonStr.replace(/\bundefined\b/g, "null").replace(/\bNaN\b/g, "null");
-  try { return JSON.parse(jsonStr); } catch { return null; }
+  // Unicode escape handling: convert \uXXXX sequences that may break JSON.parse
+  jsonStr = jsonStr.replace(/\\u002F/gi, "/")
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\u003C/gi, "<")
+    .replace(/\\u003E/gi, ">")
+    .replace(/\\u003D/gi, "=");
+  try {
+    return JSON.parse(jsonStr);
+  } catch {
+    // Second cleanup pass: strip remaining problematic patterns
+    try {
+      const cleaned = jsonStr
+        .replace(/,\s*([}\]])/g, "$1")        // trailing commas
+        .replace(/(['"])\s*:\s*,/g, "$1:null,") // empty values
+        .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+      return JSON.parse(cleaned);
+    } catch {
+      return null;
+    }
+  }
 }
 
 export function normalizeIndexes(index) {
@@ -664,6 +795,214 @@ export function normalizeIndexes(index) {
 export function filterByIndexes(items, indexes) {
   if (!indexes) return items;
   return items.filter((_, position) => indexes.has(position + 1));
+}
+
+/**
+ * Extract note data from parsed __INITIAL_STATE__.
+ * Traverses multiple known paths (PC noteDetailMap, mobile noteData, simplified).
+ * Unwraps Vue 3 reactive wrappers (_value/_rawValue).
+ * @param {object} state - Parsed __INITIAL_STATE__
+ * @param {string} [noteId] - Target note ID (optional, takes first if omitted)
+ * @returns {object|null} Unwrapped note data or null
+ */
+export function extractNoteFromState(state, noteId) {
+  if (!state || typeof state !== "object") return null;
+
+  function unwrapVue(obj) {
+    if (!obj || typeof obj !== "object") return obj;
+    if (obj._rawValue !== undefined) return unwrapVue(obj._rawValue);
+    if (obj._value !== undefined) return unwrapVue(obj._value);
+    return obj;
+  }
+
+  // PC path: state.note.noteDetailMap[noteId].note
+  const noteDetailMap = unwrapVue(state?.note?.noteDetailMap);
+  if (noteDetailMap && typeof noteDetailMap === "object") {
+    let entry = null;
+    if (noteId && noteDetailMap[noteId]) {
+      entry = unwrapVue(noteDetailMap[noteId]);
+    } else {
+      // Take first entry
+      const keys = Object.keys(noteDetailMap).filter(k => k !== "__proto__");
+      if (keys.length) entry = unwrapVue(noteDetailMap[keys[0]]);
+    }
+    if (entry) {
+      const noteData = unwrapVue(entry.note || entry);
+      if (noteData && (noteData.title || noteData.noteId || noteData.desc || noteData.imageList)) {
+        return noteData;
+      }
+    }
+  }
+
+  // Mobile path: state.noteData.data.noteData
+  const mobileNote = unwrapVue(state?.noteData?.data?.noteData);
+  if (mobileNote && (mobileNote.title || mobileNote.noteId)) return mobileNote;
+
+  // Simplified paths
+  const simpleNote = unwrapVue(state?.note?.note);
+  if (simpleNote && (simpleNote.title || simpleNote.noteId)) return simpleNote;
+
+  const noteDetail = unwrapVue(state?.noteDetail);
+  if (noteDetail && (noteDetail.title || noteDetail.noteId)) return noteDetail;
+
+  return null;
+}
+
+/**
+ * Extract CDN file token from an XHS image URL.
+ * @param {string} url - XHS image URL
+ * @returns {string} File token or empty string
+ */
+export function extractImageToken(url) {
+  if (!url || typeof url !== "string") return "";
+  // Match /spectrum/ path and extract what follows
+  const spectrumMatch = url.match(/\/spectrum\/([^?&#]+)/);
+  if (spectrumMatch) return spectrumMatch[1].replace(/\.[a-z]+$/i, "");
+  // Match ci.xiaohongshu.com path
+  const ciMatch = url.match(/ci\.xiaohongshu\.com\/([^?&#]+)/);
+  if (ciMatch) return ciMatch[1].replace(/\.[a-z]+$/i, "");
+  // Generic: extract path after last / before query
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    const last = parts.at(-1) || "";
+    return last.replace(/\.[a-z]+$/i, "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Build a clean CDN image URL from a token.
+ * @param {string} token - CDN file token
+ * @param {string} [format="png"] - Output format
+ * @returns {string} Full CDN URL
+ */
+export function buildCdnImageUrl(token, format) {
+  if (!token) return "";
+  const fmt = format || "png";
+  return `https://ci.xiaohongshu.com/${token}?imageView2/2/w/format/${fmt}`;
+}
+
+/**
+ * Extract cover image from noteData.
+ * Checks video.image, video.firstFrame, and cover fields.
+ * @param {object} noteData
+ * @returns {{url:string, width:number, height:number, source:string}|null}
+ */
+export function extractCoverImage(noteData) {
+  if (!noteData || typeof noteData !== "object") return null;
+
+  // video.image (poster frame)
+  const videoImage = noteData.video?.image || noteData.video?.firstFrame;
+  if (videoImage) {
+    const url = cleanAssetUrl(bestImageUrl(videoImage));
+    if (url) return { url, width: videoImage.width || 0, height: videoImage.height || 0, source: "video.image" };
+  }
+
+  // cover field
+  const cover = noteData.cover;
+  if (cover) {
+    if (typeof cover === "string") {
+      const url = cleanAssetUrl(cover);
+      if (url) return { url, width: 0, height: 0, source: "cover" };
+    } else if (typeof cover === "object") {
+      const url = cleanAssetUrl(bestImageUrl(cover));
+      if (url) return { url, width: cover.width || 0, height: cover.height || 0, source: "cover" };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Multi-hop short link resolver for xhslink.com URLs.
+ * Uses HEAD with redirect:manual, follows up to 5 hops.
+ * Falls back to GET on HEAD failure.
+ * @param {string} url - Short link URL
+ * @returns {Promise<{finalUrl:string, noteId:string, xsecToken:string, hops:number, source:string}|null>}
+ */
+export async function resolveShortLink(url) {
+  if (!url || typeof url !== "string") return null;
+  if (!/xhslink\.com/i.test(url)) return null;
+
+  const maxHops = 5;
+  let current = url;
+  let hops = 0;
+  let method = "HEAD";
+
+  for (let i = 0; i < maxHops; i++) {
+    try {
+      const response = await fetch(current, {
+        method,
+        redirect: "manual",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+          "Accept": "text/html,application/xhtml+xml"
+        }
+      });
+      hops++;
+      const location = response.headers.get("location");
+      if (location) {
+        current = location.startsWith("http") ? location : new URL(location, current).toString();
+      } else {
+        break;
+      }
+    } catch {
+      if (method === "HEAD") {
+        // Fallback to GET on HEAD failure
+        method = "GET";
+        continue;
+      }
+      break;
+    }
+  }
+
+  const noteId = extractXhsId(current);
+  let xsecToken = "";
+  try {
+    const parsed = new URL(current);
+    xsecToken = parsed.searchParams.get("xsec_token") || "";
+  } catch {}
+
+  return {
+    finalUrl: current,
+    noteId: noteId || "",
+    xsecToken,
+    hops,
+    source: "shortlink-resolve"
+  };
+}
+
+/**
+ * Extract Open Graph meta tags and <title> from HTML.
+ * @param {string} html - Raw HTML string
+ * @returns {{ogImage:string, ogVideo:string, ogTitle:string, ogDescription:string, ogUrl:string, title:string}}
+ */
+export function extractOgMeta(html) {
+  if (!html || typeof html !== "string") return { ogImage: "", ogVideo: "", ogTitle: "", ogDescription: "", ogUrl: "", title: "" };
+
+  function getContent(property) {
+    // Match both property="og:xxx" and name="og:xxx"
+    const regex = new RegExp(`<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']*)["']`, "i");
+    const match = html.match(regex);
+    if (match) return match[1];
+    // Also try reversed attribute order: content before property
+    const regex2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]+(?:property|name)=["']${property}["']`, "i");
+    const match2 = html.match(regex2);
+    return match2 ? match2[1] : "";
+  }
+
+  const titleMatch = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+
+  return {
+    ogImage: getContent("og:image"),
+    ogVideo: getContent("og:video"),
+    ogTitle: getContent("og:title"),
+    ogDescription: getContent("og:description"),
+    ogUrl: getContent("og:url"),
+    title: titleMatch ? titleMatch[1].trim() : ""
+  };
 }
 
 export { sleep };

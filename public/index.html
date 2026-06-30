@@ -151,7 +151,7 @@
         <div id="sub-page-mon-auth" class="sub-page">
           <div class="page-header">
             <h2>小红书账号管理</h2>
-            <p>管理登录 Cookie、扫码绑定、定时采集任务</p>
+            <p>登录入口已收敛为「专用浏览器绑定」与「手动完整 Cookie 兜底」，降低误操作和重复认证。</p>
           </div>
           <div class="card-grid two-col">
             <div class="card">
@@ -160,22 +160,31 @@
                 <input id="xhsAccountName" placeholder="账号名称（如：主号、运营号）" />
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap">
-                <button id="addAccountQrBtn" class="primary sm" style="width:auto;padding:0 16px">扫码登录</button>
-                <button id="addAccountPasteBtn" class="ghost sm" style="width:auto;padding:0 16px">粘贴 Cookie</button>
-                <button id="extractCookieBtn" class="ghost sm" style="width:auto;padding:0 16px">从 Chrome 提取 Cookie</button>
+                <button id="extractCookieBtn" class="primary sm" style="width:auto;padding:0 16px">打开专用浏览器绑定</button>
+                <button id="addAccountPasteBtn" class="ghost sm" style="width:auto;padding:0 16px">手动粘贴完整 Cookie</button>
                 <button id="testApiBtn" class="ghost sm" style="width:auto;padding:0 16px">检测 Cookie</button>
               </div>
               <div id="pasteCookieArea" style="display:none;margin-top:8px">
                 <textarea id="pasteCookieInput" placeholder="粘贴完整的 Cookie 字符串" rows="2" style="width:100%;font-size:12px"></textarea>
                 <button id="savePastedCookie" class="ghost sm" style="margin-top:4px;width:auto">保存</button>
               </div>
+              <div id="networkCookieGuide" style="display:none;margin-top:8px;padding:10px 12px;background:var(--bg);border:1px dashed var(--line);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.7">
+                <strong>手动完整 Cookie 复制步骤（兜底方式）：</strong>
+                <ol style="margin:6px 0 0 18px;padding:0">
+                  <li>用浏览器登录并打开 <code>https://www.xiaohongshu.com/explore</code>。</li>
+                  <li>按 F12 打开开发者工具，切到 Network / 网络。</li>
+                  <li>筛选 Fetch/XHR，并在过滤框输入 <code>cookie-name:web_session</code>。</li>
+                  <li>点击任意小红书作品，选择一个请求，在 Request Headers 中复制完整 <code>Cookie</code>。</li>
+                  <li>粘贴到上方输入框保存；系统会验证它是否是真登录态，不通过不会入库。</li>
+                </ol>
+              </div>
               <div style="margin-top:12px;padding:10px 12px;background:var(--bg);border:1px dashed var(--line);border-radius:var(--radius);font-size:12px;color:var(--text-muted);line-height:1.6">
-                <strong>💡 极佳稳定推荐（CDP 自动模式）：</strong>
+                <strong>💡 推荐顺序：专用浏览器绑定优先，完整 Cookie 只做兜底：</strong>
                 <p style="margin:4px 0 0">
-                  推荐使用 <strong>「从 Chrome 提取 Cookie」</strong> 按钮绑定。系统将自动以调试端口多开并唤起 Chrome，您只需在弹出的浏览器窗口中登录小红书，系统将自动读取最新 Cookie 字段并建立高稳定性绑定（共享真实浏览器指纹，长效数月不掉线）。
+                  推荐使用 <strong>「打开专用浏览器绑定」</strong>。系统会使用项目专属浏览器配置目录打开登录页，您正常登录后再保存并校验真实登录态 Cookie。
                 </p>
                 <p style="margin:4px 0 0;font-size:11px;color:var(--text-light)">
-                  * 首次使用请在页面下方「设置 ⚙️」中确认已勾选 “CDP 模式（自动启动）” 并保存。
+                  * 专用浏览器绑定是推荐授权方式；如绑定失败，再使用手动完整 Cookie。系统每 2 小时会尝试用专用浏览器会话复检/刷新已绑定账号。
                 </p>
               </div>
             </div>
@@ -448,23 +457,6 @@
 
       <!-- ===== 内容分析 ===== -->
     </div>
-
-    <!-- ===== QR Login Modal ===== -->
-    <div id="qrOverlay" class="overlay" style="display:none">
-      <div class="overlay-panel" style="max-width:400px;text-align:center">
-        <div class="overlay-head">
-          <h2>扫码登录小红书</h2>
-          <button id="closeQrBtn" class="btn-icon">✕</button>
-        </div>
-        <div id="qrCodeContainer" style="margin:16px 0;min-height:240px;display:flex;align-items:center;justify-content:center">
-          <p class="muted">正在加载二维码…</p>
-        </div>
-        <p id="qrStatus" style="font-size:13px;color:var(--text-muted)">请使用小红书 App 扫码</p>
-        <div style="display:flex;gap:8px;justify-content:center">
-          <button id="cancelQrBtn" class="ghost">取消</button>
-          </div>
-      </div>
-      </div>
 
     <!-- ===== Notification Panel ===== -->
     <div id="notifPanel" class="notif-panel" style="display:none">

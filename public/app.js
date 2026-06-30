@@ -1216,65 +1216,6 @@ function fillNotePanel(overlay, note) {
 }
 
 // ===== XHS Accounts =====
-let qrPollTimer = null;
-
-function showQrModal(accountName) {
-  $("#qrOverlay").style.display = "flex";
-  $("#qrCodeContainer").innerHTML = '<p class="muted">正在加载二维码…</p>';
-  $("#qrStatus").textContent = "请使用小红书 App 扫码";
-  startQrLoginFlow(accountName);
-}
-
-function hideQrModal() {
-  $("#qrOverlay").style.display = "none";
-  if (qrPollTimer) { clearInterval(qrPollTimer); qrPollTimer = null; }
-  const name = $("#qrOverlay").dataset.accountName || "default";
-  api("/api/auth/qr/cancel", { method: "POST", body: JSON.stringify({ accountName: name }) }).catch(() => {});
-}
-
-async function startQrLoginFlow(accountName) {
-  try {
-    const result = await api("/api/auth/qr/start", { method: "POST", body: JSON.stringify({ accountName }) });
-    $("#qrOverlay").dataset.accountName = accountName;
-    $("#qrCodeContainer").innerHTML = `<img src="${result.qrBase64}" style="max-width:240px;border-radius:8px" alt="QR Code" />`;
-    $("#qrStatus").textContent = `扫码绑定「${esc(accountName)}」`;
-    startQrPolling(accountName);
-  } catch (e) {
-    $("#qrCodeContainer").innerHTML = `<p style="color:var(--red)">加载失败：${esc(e.message)}</p>`;
-  }
-}
-
-function startQrPolling(accountName) {
-  if (qrPollTimer) clearInterval(qrPollTimer);
-  qrPollTimer = setInterval(async () => {
-    try {
-      const status = await api(`/api/auth/qr/status?accountName=${encodeURIComponent(accountName)}`);
-      if (status.status === "logged_in") {
-        clearInterval(qrPollTimer); qrPollTimer = null;
-        $("#qrStatus").textContent = "登录成功！正在保存…";
-        const final = await api("/api/auth/qr/finalize", { method: "POST", body: JSON.stringify({ accountName }) });
-        if (final.ok) {
-          $("#qrStatus").textContent = "✅ 账号绑定成功";
-          setTimeout(() => { hideQrModal(); renderXhsAccounts(); }, 1500);
-        } else {
-          $("#qrStatus").textContent = `保存失败：${esc(final.error)}`;
-        }
-      } else if (status.status === "pending" && status.refreshedQr) {
-        $("#qrCodeContainer").innerHTML = `<img src="${status.refreshedQr}" style="max-width:240px;border-radius:8px" alt="QR Code" />`;
-        $("#qrStatus").textContent = "二维码已刷新，请使用小红书扫码";
-      } else if (status.status === "timeout") {
-        clearInterval(qrPollTimer); qrPollTimer = null;
-        $("#qrStatus").textContent = "⏰ 二维码已过期";
-        $("#qrCodeContainer").innerHTML = '<button class="ghost" id="retryQrBtn">重新获取</button>';
-        $("#retryQrBtn").addEventListener("click", () => startQrLoginFlow(accountName));
-      }
-    } catch {}
-  }, 2000);
-}
-
-$("#closeQrBtn").addEventListener("click", hideQrModal);
-$("#cancelQrBtn").addEventListener("click", hideQrModal);
-
 function renderXhsAccounts() {
   api("/api/xhs-accounts").then((accounts) => {
     state.xhsAccounts = accounts;
@@ -1324,24 +1265,24 @@ function renderXhsAccounts() {
   }).catch(() => {});
 }
 
-$("#addAccountQrBtn")?.addEventListener("click", () => {
-  const name = $("#xhsAccountName").value.trim() || "账号-" + Date.now().toString(36);
-  showQrModal(name);
-});
-
 $("#addAccountPasteBtn")?.addEventListener("click", () => {
   const area = document.getElementById("pasteCookieArea");
-  area.style.display = area.style.display === "none" ? "block" : "none";
+  const guide = document.getElementById("networkCookieGuide");
+  const nextVisible = area.style.display === "none";
+  area.style.display = nextVisible ? "block" : "none";
+  if (guide) guide.style.display = nextVisible ? "block" : "none";
 });
 
 $("#extractCookieBtn")?.addEventListener("click", async () => {
   const btn = $("#extractCookieBtn");
   btn.disabled = true; btn.textContent = "提取中…";
   try {
-    const r = await api("/api/settings/xhs-cookie/from-browser", { method: "POST", body: "{}" });
-    showToast(`Cookie 提取成功！共 ${r.cookieCount} 个字段，已保存到 ${r.cookiePath}`, "success");
+    const accountName = $("#xhsAccountName")?.value?.trim() || "";
+    const r = await api("/api/settings/xhs-cookie/from-browser", { method: "POST", body: JSON.stringify({ accountName }) });
+    renderXhsAccounts();
+    showToast(`Cookie 提取成功！已保存到 ${r.cookiePath}`, "success");
   } catch (e) { showToast(`提取失败：${e.message}`, "error"); }
-  finally { btn.disabled = false; btn.textContent = "从 Chrome 提取 Cookie"; }
+  finally { btn.disabled = false; btn.textContent = "打开专用浏览器绑定"; }
 });
 
 $("#testApiBtn")?.addEventListener("click", async () => {
@@ -1349,14 +1290,15 @@ $("#testApiBtn")?.addEventListener("click", async () => {
   btn.disabled = true; btn.textContent = "检测中…";
   try {
     const r = await api("/api/xhs/test-cookie", { method: "POST" });
-    if (r.diagnostics?.hasA1 && r.diagnostics?.hasWebSession) {
-      showToast(`Cookie 有效：${r.diagnostics.cookieFields} 个字段`, "success");
+    if (r.ok) {
+      showToast(`Cookie 有效：${r.diagnostics.cookieFields} 个字段${r.diagnostics.nickname ? "，" + r.diagnostics.nickname : ""}`, "success");
     } else {
       const diag = r.diagnostics || {};
       const reasons = [];
       if (!diag.hasCookie) reasons.push("❌ 无 Cookie 文件");
       if (!diag.hasA1) reasons.push("❌ 缺 a1");
       if (!diag.hasWebSession) reasons.push("❌ 缺 web_session");
+      if (diag.reason) reasons.push(`❌ ${diag.reason}`);
       showToast(`Cookie 异常：${reasons.join("；")}`, "warn");
     }
   } catch (e) { showToast(`检测失败: ${e.message}`, "error"); }
@@ -1376,7 +1318,7 @@ $("#savePastedCookie")?.addEventListener("click", async () => {
     $("#pasteCookieInput").value = "";
     document.getElementById("pasteCookieArea").style.display = "none";
     renderXhsAccounts();
-    showToast("Cookie 已保存，xhshow API 可使用", "success");
+    showToast("Cookie 已验证并保存，可用于授权采集", "success");
   } catch (e) { showToast("保存失败：" + e.message, "error"); }
 });
 
@@ -2109,9 +2051,11 @@ function renderCrawlTab() {
     ${renderText("xhs.proxy", "代理地址", "如 http://127.0.0.1:10808", s.proxy)}
     ${renderText("xhs.userAgent", "User-Agent（用户代理）", "", s.userAgent)}
     ${renderText("xhs.browserExecutable", "浏览器路径", "留空自动寻找", s.browserExecutable)}
-    ${renderBool("xhs.useCdp", "CDP 模式（自动启动）", "自动关闭旧Chrome → 以调试模式重启Chrome → 连接提取Cookie。一键操作，无需手动", s.useCdp)}
+    ${renderBool("xhs.useCdp", "CDP 模式（专用浏览器会话）", "使用项目专属 Chrome 配置目录连接/提取 Cookie，不关闭用户已有 Chrome", s.useCdp)}
     ${renderNum("xhs.cdpPort", "Chrome 调试端口", s.cdpPort || 9222)}
-    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">开启后，点「从 Chrome 提取 Cookie」自动执行：① 强杀旧Chrome → ② 以 --remote-debugging-port 启动 → ③ 提取 Cookie → ④ 保存。你只需在弹窗中登录小红书</div>
+    ${renderBool("xhs.autoRefreshCookie", "两小时 Cookie 自动复检/刷新", "健康巡检时如果专用浏览器 profile 已有登录态，会自动刷新单账号 Cookie", s.autoRefreshCookie !== false)}
+    ${renderNum("xhs.cookieRefreshWaitMs", "后台刷新等待(ms)", s.cookieRefreshWaitMs || 8000)}
+    <div style="font-size:11px;color:var(--text-muted);margin-top:4px">系统使用项目专属 <code>.browser-profile/chrome-cdp</code> 保存授权态，不会读取或解密你的系统浏览器 Cookie。登录主流程已简化为专用浏览器绑定；手动完整 Cookie 只作为兜底入口。</div>
   </div>`;
 }
 

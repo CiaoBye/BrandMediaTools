@@ -7,7 +7,8 @@
 ### 采集核心
 - 小红书笔记链接采集，支持直接粘贴 Web 端复制的整段分享文本。
 - 支持多链接自动提取，兼容 `explore`、`discovery/item`、`user/profile`、`xhslink.com` 形式。
-- **HTTP + Playwright 双层策略**：优先解析公开分享页的 SSR 状态，数据不足时直接导航目标页并从页面状态、DOM 和合法可访问响应中补齐。
+- **公开页 HTML + Playwright 双层策略**：单篇作品默认先不带 Cookie 请求公开分享页 HTML，解析 `window.__INITIAL_STATE__` 中的结构化数据；公开页解析失败或素材不足时，再使用 Cookie/Playwright 兜底补齐。
+- **XHS-Downloader 式主路径**：公开作品页可访问时，不依赖登录态 Cookie 即可提取标题、正文、作者、互动数据、图片、视频和 Live 图地址。
 - 支持 `/xhs/detail` 接口，参数对齐 XHS-Downloader：`url/download/index/cookie/proxy/skip`。
 - 支持 `/xhs/links` 和 CLI `--links` 提取账号主页、搜索页、推荐页、专辑/收藏等页面作品链接。
 - 支持本地 MCP 模式，暴露 `xhs_detail` 和 `xhs_links` 给 Agent/自动化调用。
@@ -42,8 +43,9 @@
 - **内容分类管理**：选题库/脚本模板库/视觉参考库/营销话术库，支持单条和批量操作
 
 ### 账号与登录
-- **QR 码扫码登录**（多账号独立会话），基于 Playwright 打开真实登录页提取 QR。
-- 二维码提取支持页面画布、图片标签和二维码元素截图；未识别到真实二维码时明确报错。
+- **登录主流程简化**：前端只保留「打开专用浏览器绑定」和「手动粘贴完整 Cookie」两个绑定入口，以及「检测 Cookie」诊断入口。
+- **专用浏览器绑定**：使用项目专属 `.browser-profile/chrome-cdp` 配置目录打开小红书，用户正常登录后保存并校验真实登录态 Cookie。
+- **手动完整 Cookie 兜底**：按浏览器 Network 请求复制完整 Cookie，保存前必须通过真实登录态校验。
 - **Cookie 加密存储**：AES-256-GCM，密钥绑定当前机器、项目目录和应用密钥，并兼容旧数据读取。
 - **账号矩阵管理**：绑定/检测/删除多账号，前端 UI 面板。
 
@@ -112,19 +114,27 @@ npm run mcp
 
 ## 小红书 Cookie
 
-支持多种方式：
+当前前端仅保留两种绑定方式：
+
+- 网页「打开专用浏览器绑定」：使用项目专属 `.browser-profile/chrome-cdp` 调试浏览器，若未登录会打开登录页，等待用户正常扫码/短信登录后再保存。
+- 网页「手动粘贴完整 Cookie」：按浏览器开发者工具 Network 请求复制完整 Cookie，粘贴后通过真实登录态校验才保存。
+
+兼容读取方式：
+
 - 环境变量 `XHS_COOKIE` 或 `data/xhs-cookie.txt`
-- 网页内 QR 扫码登录（多账号独立会话）
-- 网页"从本机浏览器保存"
 - CLI `--save-cookie`
 
-Cookie 使用 AES-256-GCM 加密存储，仅供正常授权页面访问。
+Cookie 使用 AES-256-GCM 加密存储，仅供正常授权页面访问。系统会解析小红书页面状态，若 Cookie 只是访客态或已跳登录页，会判为无效，避免定时任务反复无效访问。
+定时健康巡检每 2 小时会检查账号 Cookie；若启用 CDP 且专用浏览器已有有效登录态，会尝试非交互式刷新单账号 Cookie。
+
+单篇作品采集默认优先走无 Cookie 公开页解析；Cookie 只在公开页数据不足、页面不可访问或需要授权内容时作为兜底，不再作为作品采集主路径。
 
 ## 数据目录
 - `data/app.db`：SQLite 数据库
 - `data/library/`：采集素材库
 - `data/eagle-export/`：Eagle 导出目录
-- `.browser-profile/xhs/`：Playwright 浏览器登录态
+- `.browser-profile/chrome-cdp/`：专用 CDP 浏览器登录态
+- `.browser-profile/tool-profile/`：Playwright 持久浏览器登录态
 
 ## 配置文件 `data/settings.json`
 

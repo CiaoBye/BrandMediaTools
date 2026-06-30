@@ -1,4 +1,66 @@
-# 更新日志
+﻿# 更新日志
+## v1.13.9 (2026-06-30)
+- **认证链路收口**: 删除旧二维码登录后端模块、服务端 `/api/auth/qr/*` 路由和前端二维码弹窗/轮询代码，登录入口只保留专用浏览器 profile 绑定与手动完整 Cookie 兜底。
+- **后台刷新稳定性增强**: 专用浏览器绑定改用项目专属持久 profile，后台健康检查不再强依赖 `cdpPort` 配置；定时任务遇到 Cookie/登录态错误时会先尝试非交互刷新授权态，刷新成功则下一轮自动重试，失败才暂停。
+- **Cookie 生命周期稳定性修复**: 修复 `saveXhsCookieFromBrowser()` 登录等待 `deadline` 未定义导致专用浏览器绑定失败的问题；浏览器态识别不再把 `guest_user_id` 当作真实登录；手动保存、浏览器保存和调度健康检查均会持久化 `checkCookieValid()` 返回的更新后 Cookie。
+- **采集链路审计测试补齐**: 新增 `tests/crawl-chain-audit-test.mjs`，覆盖账号链接深扫、滚动策略、并发采集、successNoteIds 去重、Cookie/CDP 上下文、noteId 存储去重、定时 follow 一致性、Range 回退、弃用 API 残留和版本同步。
+- **Cookie/CDP 上下文修复**: `createBrowser()` 支持调用方用 `cdpPort: 0` 明确禁用设置中的 CDP 端口，避免传入 Cookie 时误连已有浏览器上下文导致 Cookie 未注入。
+- **账号与定时跟随去重修复**: `followAccount()` 不再硬置访客态为 false；手动抓取和定时 follow 均按 canonical noteId 判断已采集笔记，并在定时任务中保留旧账号名、头像和品牌字段。
+- **存储去重修复**: `notes` upsert 和 skip 判断优先使用 `noteId` 合并同一笔记的不同 URL 形态，减少重复入库和重复下载。
+- **下载续传修复**: `.part` 文件续传时若服务端返回 200 而非 206，立即回退为完整下载，不再消耗一次重试。
+- **弃用路径删除**: 搜索链路移除旧 `xhsApiClient` API-first 分支，服务端和 Cookie 保存链路不再引用旧 API 缓存；删除 `src/xhsApiClient.mjs`、`src/signserver/` 旧签名服务和对应 scratch 验证脚本；同步 package 和 MCP 版本至 v1.13.9。
+---
+
+## v1.13.8 (2026-06-29)
+- **账号抓取登录态回归修复**: `openXhsContext()` 在调用方传入已保存 Cookie 时不再复用服务启动时的全局浏览器，避免 Cookie 未注入导致账号主页作品列表为空。
+- **账号抓取日志增强**: `/api/follow/crawl` 增加开始、完成、失败日志，`followAccount()` 增加候选笔记链接数量日志，便于定位“抓取 0 条”的真实原因。
+- **账号抓取增量收口**: 手动账号抓取会把数据库中同作者已采笔记加入 knownNoteIds，默认只处理最近 30 条候选，避免历史账号一次重扫数百条导致前端超时。
+---
+
+## v1.13.7 (2026-06-29)
+- **followAccount 重复采集修复**: HTTP 部分成功 + 部分失败后降级 Playwright 时，不再清空已成功采集的 seenNoteIds；只让失败的 note 进入降级路径（新增 successNoteIds 跟踪机制）。补充 tests/follow-account-dedup-test.mjs 覆盖 4 个场景。
+- **saveXhsCookieFromBrowser deadline 修正**: 登录等待 deadline 改为在 while 循环前重新计算，排除 createBrowser + page.goto 的初始化耗时，用户实际可用登录时间恢复 waitMs 完整值。
+- **downloader Range 复核确认**: 非 206 响应时 unlinkSync(tmpPath) + continue → 下次循环 partialSize=0 → 自动回退完整下载，无死循环风险。
+- **addAssets 空数组复核确认**: 空数组 = no-op，不清除旧素材，语义正确。如有清除需求应考虑独立 clearAssets 函数。
+---
+
+## v1.13.6 (2026-06-29)
+- **fetchNoteViaHttp 增强**: 集成 resolveShortLink 替代内联 HEAD 短链解析；新增多 URL 形态降级（/discovery/item、xsec_source=pc_note）；新增 og:image/og:video HTML meta 标签兜底素材提取；封面图作为独立 cover 资产入库；视频候选从 1 个增至 3 个；返回字段增加 ipLocation/lastUpdateTime/cover/shareInfo
+- **xhsSdk.mjs**: 新增 bestImageUrls() — 返回有序图片候选列表（含 CDN token 直链）；新增 bestVideoStreams() — 返回完整编码×分辨率视频矩阵；mergeXhsLinks() 改为返回 {url, hasXsecToken, noteId} 对象增强 /xhs/links API
+- **crawlWithFallback (flow.mjs)**: playwright 路径增加 og:image/og:video HTML meta 素材兜底；增加 extractXhsId 导入
+- **extractAccountLinks (account.mjs)**: 增强 DOM 深度扫描（data-note-id、Vue __vue__、img data-src、section/card 链接）；滚动策略升级（渐进延时 + 随机抖动、每 50 条回到顶部、空滚动阈值 8 次自适应）
+- **extractAccountNotes (account.mjs)**: 多标签页并行采集（使用 accountParallelTabs=3 信号量控制）
+- **note-store.mjs**: notes 表新增 ip_location/last_update_time/cover_url 列（ALTER TABLE 迁移）；upsertNote/hydrateNoteWith 同步支持新字段
+- **/xhs/links API**: 返回增加 xsecTokenResults 字段，每条链接含 url/hasXsecToken/noteId 状态
+- **/xhs/detail API**: 返回增加 ipLocation/lastUpdateTime/cover/shareInfo 字段（由 fetchNoteViaHttp 底层支持）
+- **server.mjs**: 增加 extractXhsId 导入；所有 /xhs/links 返回路径统一增加 xsecTokenResults
+---
+
+## v1.13.5 (2026-06-29)
+- **公开页无 Cookie 主链路**：`fetchNoteViaHttp()` 改为默认先不带 Cookie 请求作品公开页 HTML，解析 `window.__INITIAL_STATE__` 获取标题、正文、作者、互动、图片、视频和 Live 图资源；只有公开页解析失败或素材不足时才尝试 Cookie 兜底。
+- **XHS-Downloader 思路主线化**：采集日志从 “HTTP SSR” 调整为 “公开页 HTML”，明确当前主路径是公开作品页 HTML + 页面状态解析，而不是登录态 API 或账号 Cookie。
+- **账号风险降低**：本地即使存在 Cookie，单篇作品采集也优先不发送 Cookie；新增回归测试覆盖“本地有 Cookie 但公开页可解析时必须走公开页”的场景。
+- **兜底策略保留**：公开页无法解析、资源缺失或页面不可访问时，仍保留 Cookie/Playwright 兜底，保证数据获取能力优先。
+
+## v1.13.4 (2026-06-29)
+- **登录方式简化**：账号管理页主入口收敛为「打开专用浏览器绑定」「手动粘贴完整 Cookie」「检测 Cookie」三项，移除二维码登录与独立 Network 教程按钮在主界面的展示，减少重复入口和误操作。
+- **设置页认证项收敛**：采集设置页不再展示 SigCLI 预留配置，保留专用浏览器会话、自动复检/刷新和后台刷新等待时间等实际可用项。
+- **XHS-Downloader 实现研究**：梳理其单篇详情链路：HTTP 获取作品页 HTML、解析 `window.__INITIAL_STATE__`、提取作品信息、图片/视频/Live 图地址、下载记录和断点续传；用户主页签名请求模块仅作为风险评估参考，不纳入本项目。
+- **合规文案修正**：将 HTTP 快速路径中的“不带 Cookie 重试”日志改为「公开页重试」表述，避免把公开页面降级误写成风控绕过。
+
+## v1.13.3 (2026-06-29)
+- **三通道认证体系合并**：账号管理页新增「Network 完整 Cookie 教程」，保留手动粘贴入口，并与「从 Chrome 提取 Cookie」真实浏览器会话形成互补。
+- **手动 Cookie 强校验**：`/api/settings/xhs-cookie` 与 `/api/xhs-accounts` 保存前会调用登录态校验，访客态、跳登录页或缺字段 Cookie 不再入库，避免“保存成功但定时任务跑不通”。
+- **浏览器会话同步数据库账号**：`/api/settings/xhs-cookie/from-browser` 成功后不只写入 `data/xhs-cookie.txt`，还会同步更新 `xhs_accounts` 加密 Cookie，修复绑定任务仍使用旧 DB Cookie 的问题。
+- **两小时自动复检/刷新**：调度器健康巡检若发现单账号 Cookie 失效，会尝试以非交互方式读取专用 CDP 浏览器已有登录态并刷新 DB；如果专用浏览器未登录，不会弹窗打扰用户。
+- **调度重启恢复保护**：服务重启时会自动结束残留的“运行中”任务日志，并把卡在“运行中”的定时任务恢复为等待状态，避免强制重启后界面误显示任务仍在执行。
+- **SigCLI 兼容位预留**：设置页新增认证提供方与 SigCLI 命令配置项，当前不作为强制依赖，后续可在安装并确认命令输出格式后接入外部凭证代理。
+
+## v1.13.2 (2026-06-29)
+- **Cookie 登录态误判修复**：`checkCookieValid()` 不再仅凭 `web_session` 与 `/explore` HTTP 200 判定有效，而是解析页面 `__INITIAL_STATE__`，识别 Vue reactive wrapper 中的 `guest` / `loggedIn` / `userInfo`，避免把访客会话误判为可抓取登录态。
+- **从浏览器提取 Cookie 全链路修复**：`/api/settings/xhs-cookie/from-browser` 默认等待时间从 8 秒调整为 120 秒，并在保存前确认浏览器中为真实登录态；若当前专用浏览器未登录，会打开登录页等待用户正常扫码/短信登录。
+- **CDP 专用浏览器启动安全修复**：`launchCdpChrome()` 不再执行 `taskkill` 误杀用户已有 Chrome，只使用项目专属 `.browser-profile/chrome-cdp` 配置目录启动/连接调试浏览器，并标识是否由工具启动。
+- **测试体系补充**：新增 `cookie-auth-state-test`，覆盖访客态、真实登录态和登录页 HTML 的离线识别逻辑；版本升级至 `1.13.2`。
 
 ## v1.13 (2026-06-25)
 - **纯视频笔记分类识别修复**：修正 `extract.mjs` 中对纯视频类型（存在视频但 imageList 为空时）的误判，避免其被标记为 `"待复核"`，使其正常归为 `"视频笔记"`。

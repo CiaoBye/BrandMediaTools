@@ -149,17 +149,17 @@ async function downloadFile(rootDir, sourceUrl, targetPath, note, settings) {
     try {
       const response = await fetch(sourceUrl, { headers, signal: controller.signal });
       clearTimeout(timer);
+      const appendRange = useRange && response.status === 206;
       if (useRange && response.status !== 206) {
         unlinkSync(tmpPath);
-        continue;
       }
-      if (!response.ok && (!useRange || response.status !== 206)) {
+      if (!response.ok && !appendRange) {
         throw new Error(`下载失败：HTTP ${response.status}`);
       }
-      await pipeWebStreamToFile(response.body, tmpPath, useRange ? "a" : "w");
+      await pipeWebStreamToFile(response.body, tmpPath, appendRange ? "a" : "w");
       const expectedTail = Number(response.headers.get("content-length") || 0);
       const actualSize = statSync(tmpPath).size;
-      if (expectedTail && !useRange && actualSize < expectedTail) {
+      if (expectedTail && !appendRange && actualSize < expectedTail) {
         throw new Error(`文件不完整：${actualSize}/${expectedTail}`);
       }
       renameSync(tmpPath, targetPath);

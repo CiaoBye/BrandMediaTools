@@ -20,9 +20,12 @@ export const aiPresets = [
 export const defaultSettings = {
   xhs: {
     headless: true,
-    maxAccountNotes: 100,
-    accountScrollPages: 8,
+    maxAccountNotes: 500,
+    accountScrollPages: 30,
     accountScrollDelayMs: 1200,
+    accountScrollEmptyThreshold: 8,
+    accountScrollProgressiveDelay: true,
+    accountParallelTabs: 3,
     cookie: "",
     cookieFile: "data/xhs-cookie.txt",
     proxy: "",
@@ -31,6 +34,10 @@ export const defaultSettings = {
     browserExecutable: "",
     cdpPort: 0,
     useCdp: false,
+    autoRefreshCookie: true,
+    cookieRefreshWaitMs: 8000,
+    authProvider: "builtin",
+    sigCliCommand: "",
     mappingData: {}
   },
   download: {
@@ -135,7 +142,7 @@ export function envWithSettings(rootDir) {
     xhs: {
       ...settings.xhs,
       headless: parseBool(process.env.XHS_HEADLESS, settings.xhs.headless),
-      maxAccountNotes: Number(process.env.XHS_MAX_ACCOUNT_NOTES || settings.xhs.maxAccountNotes || 12),
+      maxAccountNotes: Number(process.env.XHS_MAX_ACCOUNT_NOTES || settings.xhs.maxAccountNotes || 500),
       cookie: process.env.XHS_COOKIE || settings.xhs.cookie || "",
       cookieFile: process.env.XHS_COOKIE_FILE || settings.xhs.cookieFile || "data/xhs-cookie.txt",
       proxy: process.env.XHS_PROXY || settings.xhs.proxy || "",

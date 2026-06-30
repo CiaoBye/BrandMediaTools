@@ -209,7 +209,7 @@ async function handle(message) {
           capabilities: { tools: {} },
           serverInfo: {
             name: "brand-content-intelligence-xhs",
-            version: "1.10.0"
+            version: "1.13.9"
           }
         }
       };

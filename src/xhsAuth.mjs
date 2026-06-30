@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+﻿import { existsSync, readFileSync } from "node:fs";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { envWithSettings } from "./settings.mjs";
@@ -120,6 +120,77 @@ export function cleanCookieString(raw) {
   return str.split(";").map((part) => part.trim()).filter(Boolean).join("; ");
 }
 
+function parseInitStateForAuth(html) {
+  const idx = String(html || "").indexOf("__INITIAL_STATE__");
+  if (idx < 0) return null;
+  const scriptStart = html.slice(0, idx).lastIndexOf("<script");
+  if (scriptStart < 0) return null;
+  const fromScript = html.slice(scriptStart);
+  const scriptEnd = fromScript.indexOf("</script>");
+  if (scriptEnd < 0) return null;
+  const inScript = fromScript.slice(0, scriptEnd);
+  const eqPos = inScript.indexOf("=");
+  const braceStart = inScript.indexOf("{", eqPos);
+  const braceEnd = inScript.lastIndexOf("}");
+  if (braceStart < 0 || braceEnd < 0) return null;
+  let jsonStr = inScript.slice(braceStart, braceEnd + 1);
+  jsonStr = jsonStr.replace(/\bundefined\b/g, "null").replace(/\bNaN\b/g, "null");
+  // Handle Unicode escape sequences (same as SDK parseInitState)
+  jsonStr = jsonStr.replace(/\\u002F/gi, "/")
+    .replace(/\\u0026/gi, "&")
+    .replace(/\\u003C/gi, "<")
+    .replace(/\\u003E/gi, ">")
+    .replace(/\\u003D/gi, "=");
+  try { return JSON.parse(jsonStr); } catch {}
+  // Secondary cleanup pass on failure: trailing commas, hex escapes
+  try {
+    const cleaned = jsonStr
+      .replace(/,\s*([}\]])/g, "$1")
+      .replace(/(["\x27])\s*:\s*,/g, "$1:null,")
+      .replace(/\\x([0-9a-fA-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    return JSON.parse(cleaned);
+  } catch { return null; }
+}
+
+function unwrapReactive(value) {
+  if (!value || typeof value !== "object") return value || {};
+  return value._value || value._rawValue || value;
+}
+
+export function inspectCookieStateFromHtml(html) {
+  const state = parseInitStateForAuth(html);
+  const text = String(html || "");
+  if (!state) {
+    return {
+      hasState: false,
+      isLoginPage: /手机号登录|验证码登录|登录小红书|请输入手机号/.test(text),
+      isGuest: null,
+      isLoggedIn: null,
+      userId: "",
+      nickname: ""
+    };
+  }
+  const user = state.user || {};
+  const userInfo = unwrapReactive(user.userInfo);
+  const userPageData = unwrapReactive(user.userPageData);
+  const loggedIn = unwrapReactive(user.loggedIn);
+  const auth = unwrapReactive(user.auth);
+  const basic = userPageData.basicInfo || {};
+  // SSR guest flag is unreliable - XHS often pre-renders guest:true even for valid sessions
+  const guestFlags = [userInfo.guest, userPageData.guest, auth.guest].filter(v => v === true).length;
+  const rawUserId = userInfo.userId || userInfo.id || basic.userId || basic.redId || "";
+  const userId = /^guest/i.test(String(rawUserId || "")) ? "" : rawUserId;
+  const hasIdentity = Boolean(userId || userInfo.nickname || basic.nickname);
+  const isGuest = guestFlags > 0 && !hasIdentity;
+  const nickname = userInfo.nickname || basic.nickname || "";
+  const isLoggedIn = (
+    loggedIn === true ||
+    loggedIn.value === true ||
+    Boolean(userId || nickname)
+  ) || (guestFlags === 0 && hasIdentity);
+  return { hasState: true, isLoginPage: false, isGuest, isLoggedIn, userId, nickname };
+}
+
 /** 检查 Cookie 是否有效：轻量级检测，只检查 HTTP 状态和重定向 */
 export async function checkCookieValid(rootDir, cookieRaw) {
   const cleaned = cleanCookieString(cookieRaw);
@@ -140,9 +211,23 @@ export async function checkCookieValid(rootDir, cookieRaw) {
       if (location.includes("/login")) return { valid: false, reason: "Cookie 已过期，被重定向到登录页" };
     }
     if (resp.status === 200) {
+      const html = await resp.text();
+      const authState = inspectCookieStateFromHtml(html);
+      if (authState.isLoginPage) {
+        return { valid: false, reason: "Cookie 已过期，页面要求重新登录" };
+      }
+      if (authState.hasState && authState.isGuest === true) {
+        return { valid: false, reason: "Cookie 为访客会话，非登录态" };
+      }
+      if (authState.hasState && authState.isLoggedIn === false) {
+        return { valid: false, reason: "Cookie 未通过登录态校验" };
+      }
       // 抽取 Set-Cookie 中 a1 更新
       let updatedCookie = cleaned;
-      const setCookies = resp.headers.get("set-cookie") ? [resp.headers.get("set-cookie")] : [];
+      const setCookies = [];
+      resp.headers.forEach((val, key) => {
+        if (key.toLowerCase() === "set-cookie") setCookies.push(val);
+      });
       if (setCookies.length > 0) {
         const parts = cleaned.split(";").map(s => s.trim()).filter(Boolean);
         let changed = false;
@@ -158,10 +243,17 @@ export async function checkCookieValid(rootDir, cookieRaw) {
         }
         if (changed) updatedCookie = parts.join("; ");
       }
-      return { valid: true, cookieUpdated: updatedCookie, cookieCount: cleaned.split(";").length };
+      return {
+        valid: true,
+        cookieUpdated: updatedCookie,
+        cookieCount: cleaned.split(";").length,
+        nickname: authState.nickname || "",
+        userId: authState.userId || ""
+      };
     }
     return { valid: false, reason: `意外状态码 ${resp.status}` };
   } catch (e) {
+    console.warn("[checkCookieValid] 检测异常:", e.message);
     return { valid: false, reason: `检测失败：${e.message}` };
   }
 }

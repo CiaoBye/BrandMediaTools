@@ -1,27 +1,12 @@
-import { envWithSettings } from "../settings.mjs";
 import { createBrowser, openXhsContext, mergeXhsLinks, sleep } from "../xhsSdk.mjs";
-import { searchViaApi, readApiCookie } from "../xhsApiClient.mjs";
 
 export async function searchXhs(keyword, options = {}) {
   const rootDir = options.rootDir || process.cwd();
-
-  // API 优先
-  if (readApiCookie(rootDir)) {
-    try {
-      const result = await searchViaApi(keyword, "", rootDir);
-      if (result && result.items.length > 0) {
-        const urls = result.items.map(i => `https://www.xiaohongshu.com/explore/${i.note_card?.note_id || i.id}`).filter(Boolean);
-        return { keyword, count: urls.length, links: mergeXhsLinks([], urls), items: result.items.slice(0, 50) };
-      }
-    } catch {}
-  }
-
-  const settings = envWithSettings(rootDir);
   const cookie = options.cookie || "";
 
   let browser, context;
   if (cookie) {
-    context = await openXhsContext(rootDir, cookie, { headless: options.headless, proxy: options.proxy });
+    context = await openXhsContext(rootDir, cookie, { headless: options.headless, proxy: options.proxy, cdpPort: 0 });
     browser = context.browser?.();
   } else {
     const bw = await createBrowser(rootDir, { headless: options.headless, proxy: options.proxy });

@@ -22,6 +22,7 @@ export class Storage {
     // Delegate all methods from sub-stores
     // Notes
     this.findNoteBySourceUrl = this.notes.findNoteBySourceUrl.bind(this.notes);
+    this.findNoteByNoteId = this.notes.findNoteByNoteId.bind(this.notes);
     this.upsertNote = this.notes.upsertNote.bind(this.notes);
     this.getNote = this.notes.getNote.bind(this.notes);
     this.listNotes = this.notes.listNotes.bind(this.notes);
