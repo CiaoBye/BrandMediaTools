@@ -88,6 +88,20 @@ export async function extractAccountLinks(page, options = {}) {
   return Array.from(byNoteId.values()).sort((a, b) => scoreXhsNoteUrl(b) - scoreXhsNoteUrl(a)).slice(0, maxNotes);
 }
 
+async function mapLimited(items, limit, worker) {
+  const size = Math.max(1, Number(limit) || 1);
+  const results = new Array(items.length);
+  let next = 0;
+  async function run() {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await worker(items[index], index);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, run));
+  return results;
+}
+
 async function extractAccountNotes(page, input, options) {
   const rootDir = options.rootDir || process.cwd();
   const settings = envWithSettings(rootDir);
@@ -126,20 +140,25 @@ async function extractAccountNotes(page, input, options) {
 
 export async function followAccount(input, options = {}) {
   const rootDir = options.rootDir || process.cwd();
+  const settings = envWithSettings(rootDir);
+  const httpParallel = Math.max(1, Math.min(8, Number(options.httpParallel ?? settings.xhs.accountHttpParallel ?? 4)));
   let userId = input.userId || "";
   const authorUrl = input.authorUrl || "";
   if (!userId && authorUrl) userId = extractXhsId(authorUrl);
   if (!userId) throw new Error("需要提供 userId 或账号主页链接");
   const knownNoteIds = Array.isArray(input.knownNoteIds) ? input.knownNoteIds : [];
   const knownNoteIdSet = new Set(knownNoteIds.filter(Boolean));
+  const repairNoteIdSet = new Set((Array.isArray(input.repairNoteIds) ? input.repairNoteIds : []).filter(Boolean));
   const isFirstFollow = knownNoteIds.length === 0;
   const allNotes = [];
   const seenNoteIds = new Set();
+  const httpFailedNoteIds = new Set();
   let authorName = input.authorName || "";
   let avatarUrl = "";
   let noteUrls = [];
   let httpRiskError = null;
   log("info", `账号抓取开始：userId=${userId}，已知笔记=${knownNoteIdSet.size}`);
+  log("info", `本轮账号抓取阶段：开始读取账号主页 userId=${userId}`);
   const httpProfile = await fetchAccountNotesViaHttp(userId, { ...options, rootDir }).catch((e) => {
     if (e.message && e.message.includes("风控")) httpRiskError = e;
     return null;
@@ -147,19 +166,33 @@ export async function followAccount(input, options = {}) {
   if (httpProfile) { authorName = httpProfile.authorName || authorName; avatarUrl = httpProfile.avatarUrl || avatarUrl; noteUrls = httpProfile.noteUrls; }
   if (noteUrls.length) {
     let successCount = 0;
-    let attemptedNewCount = 0;
     const successNoteIds = new Set();
+    const httpCandidates = [];
     for (const url of noteUrls) {
       const noteId = extractXhsId(url);
       if (!noteId || seenNoteIds.has(noteId)) continue;
-      if (!isFirstFollow && knownNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
+      if (!isFirstFollow && knownNoteIdSet.has(noteId) && !repairNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
       seenNoteIds.add(noteId);
-      attemptedNewCount++;
+      httpCandidates.push({ url, noteId });
+    }
+    const attemptedNewCount = httpCandidates.length;
+    if (attemptedNewCount === 0) {
+      const allKnownIds = new Set([...knownNoteIdSet, ...seenNoteIds]);
+      log("info", "HTTP 账号列表无新增/待修复笔记，跳过浏览器降级流程。");
+      return { notes: allNotes, cursor: JSON.stringify(Array.from(allKnownIds)), authorName, avatarUrl, totalFound: allKnownIds.size };
+    }
+    log("info", "HTTP 快速路径并发提取作品详情：" + attemptedNewCount + " 条，parallel=" + httpParallel);
+    const httpResults = await mapLimited(httpCandidates, httpParallel, async ({ url, noteId }) => {
       const httpResult = await fetchNoteViaHttp({ ...input, url }, { ...options, rootDir }).catch(() => null);
+      return { url, noteId, httpResult };
+    });
+    for (const { noteId, httpResult } of httpResults) {
       if (httpResult && httpResult.length > 0) {
         allNotes.push({ ...httpResult[0], accountId: input.accountId || null, brand: input.brand || "" });
         successCount++;
         successNoteIds.add(noteId);
+      } else {
+        httpFailedNoteIds.add(noteId);
       }
     }
     const shouldFallback = (isFirstFollow && successCount === 0) || (attemptedNewCount > 0 && successCount === 0);
@@ -193,23 +226,41 @@ export async function followAccount(input, options = {}) {
     await randomDelay(800, 2000);
     if (!headless) { let w = 0; while (w < 120) { const u = page.url(); if (!u.includes("/captcha") && !u.includes("/website-login")) break; if (w === 0) console.log("[followAccount] 检测到验证码页面，最长等待 120 秒"); await sleep(3000); w += 3; } }
     await sleep(4000);
+    const currentUrl = page.url();
+    if (currentUrl.includes("error_code=300012") || currentUrl.includes("website-login/error")) {
+      throw new Error("小红书限制：IP存在安全风险，请切换代理/网络环境后重试");
+    }
     const cs = await page.evaluate(() => { let c = false, g = false; if (document.querySelector(".secsdk-captcha-wrapper, [class*=captcha], iframe[src*=captcha]")) c = true; try { const s = window.__INITIAL_STATE__; const ui = (s?.user?.userInfo?._value) || s?.user?.userInfo; const pd = (s?.user?.userPageData?._value) || s?.user?.userPageData; if (ui?.guest === true || pd?.guest === true) g = true; } catch {} return { isCaptcha: c, isGuest: g }; }).catch(() => ({ isCaptcha: false, isGuest: false }));
-    if (page.url().includes("/login") || cs.isGuest) throw new Error("检测到登录页面重定向，Cookie 无效或已过期");
-    const settings = envWithSettings(rootDir);
+    if (currentUrl.includes("/login") || cs.isGuest) throw new Error("检测到登录页面重定向，Cookie 无效或已过期");
     noteUrls = await extractAccountLinks(page, { rootDir, maxNotes: options.maxNotes || settings.xhs.maxAccountNotes || 100, scrollPages: options.scrollPages || settings.xhs.accountScrollPages || 15 });
     log("info", `账号主页链接提取完成：发现 ${noteUrls.length} 条候选笔记`);
+    log("info", `本轮账号抓取阶段：作品列表获取完成，候选笔记 ${noteUrls.length} 条`);
     if (!noteUrls.length) {
       log("warn", "账号主页未提取到笔记链接，请确认页面已正常加载作品列表");
       return { notes: [], cursor: JSON.stringify(Array.from(knownNoteIdSet)), authorName, avatarUrl, totalFound: knownNoteIdSet.size };
     }
+    const newUrlsToFetch = noteUrls.filter(url => {
+      const nid = extractXhsId(url);
+      return nid && (!knownNoteIdSet.has(nid) || repairNoteIdSet.has(nid));
+    });
+    let processed = 0;
     for (const url of noteUrls) {
       const noteId = extractXhsId(url);
       if (!noteId || seenNoteIds.has(noteId)) continue;
-      if (!isFirstFollow && knownNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
+      if (!isFirstFollow && knownNoteIdSet.has(noteId) && !repairNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
       seenNoteIds.add(noteId);
+      processed++;
+      if (processed === 1 || processed === newUrlsToFetch.length || processed % 5 === 0) {
+        log("info", `本轮账号抓取阶段：正在提取作品详情 ${processed}/${newUrlsToFetch.length}`);
+      }
+      if (options.onProgress) {
+        try { options.onProgress(processed, newUrlsToFetch.length, url); } catch {}
+      }
       await randomDelay(800, 2500);
-      const hr = await fetchNoteViaHttp({ ...input, url }, { ...options, rootDir }).catch(() => null);
-      if (hr && hr.length > 0) { allNotes.push({ ...hr[0], accountId: input.accountId || null, brand: input.brand || "" }); continue; }
+      if (!httpFailedNoteIds.has(noteId)) {
+        const hr = await fetchNoteViaHttp({ ...input, url }, { ...options, rootDir }).catch(() => null);
+        if (hr && hr.length > 0) { allNotes.push({ ...hr[0], accountId: input.accountId || null, brand: input.brand || "" }); continue; }
+      }
       const child = await context.newPage();
       try {
         const cb = []; attachResponseCollector(child, cb);

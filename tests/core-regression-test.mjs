@@ -11,12 +11,30 @@ import { decryptCookie, encryptCookie } from "../src/xhsAuth.mjs";
 import { fetchNoteViaHttp } from "../src/crawler/extract.mjs";
 import { fmtDate, fmtDateTime } from "../src/time.mjs";
 import { Storage } from "../src/storage.mjs";
+import { crawlAndStore } from "../src/server-utils.mjs";
+import { buildAssetIntegrity, isNoteComplete, shouldRepairNoteAssets } from "../src/noteCompleteness.mjs";
 
 const rootDir = mkdtempSync(path.join(os.tmpdir(), "xhs-core-regression-"));
 const png = Buffer.from("89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000d49444154789c6360000000020001e221bc330000000049454e44ae426082", "hex");
 
+async function rmTempDirWithRetry(target) {
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    try {
+      rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      return;
+    } catch (error) {
+      if (attempt === 5) {
+        console.warn(`[core-regression-test] 临时目录清理失败，已保留供系统稍后回收：${target} (${error.code || error.message})`);
+        return;
+      }
+      if (error.code !== "EPERM") throw error;
+      await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+    }
+  }
+}
+
 const server = http.createServer((req, res) => {
-  if (req.url === "/asset.png") {
+  if (req.url === "/asset.png" || /^\/asset-\d+\.png$/.test(req.url || "")) {
     res.writeHead(200, { "Content-Type": "image/png", "Content-Length": png.length });
     res.end(png);
     return;
@@ -73,6 +91,32 @@ const server = http.createServer((req, res) => {
                 height: 960,
                 urlDefault: `http://127.0.0.1:${server.address().port}/asset.png`
               }]
+            }
+          }
+        }
+      }
+    };
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(`<script>window.__INITIAL_STATE__=${JSON.stringify(state)}</script>`);
+    return;
+  }
+  if (req.url === "/snake-images") {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const state = {
+      note: {
+        noteDetailMap: {
+          snakeImages: {
+            note: {
+              noteId: "snake-image-note",
+              title: "蛇形图片字段测试",
+              desc: "单条笔记需要完整保留 image_list",
+              time: Date.now(),
+              user: { nickname: "测试作者", userId: "u-snake" },
+              image_list: [
+                { width: 720, height: 960, url_default: `${base}/asset-1.png` },
+                { width: 720, height: 960, info_list: [{ image_scene: "WB_DFT", url: `${base}/asset-2.png` }] },
+                { width: 720, height: 960, url_pre: `${base}/asset-3.png` }
+              ]
             }
           }
         }
@@ -140,11 +184,55 @@ try {
   assert.equal(publicFirstNotes[0].title, "公开页优先测试");
   assert.equal(publicFirstNotes[0].raw.acquisitionMode, "public");
   assert.equal(publicFirstNotes[0].raw.authUsed, false);
+  const snakeImageNotes = await fetchNoteViaHttp({ url: `http://127.0.0.1:${port}/snake-images` }, { rootDir });
+  assert.equal(snakeImageNotes[0].raw.imageCount, 3, "单条笔记应识别 image_list 中的全部图片");
+  assert.equal(snakeImageNotes[0].assets.filter((asset) => asset.kind === "image").length, 3, "单条笔记应保留全部图片素材");
+  const partialIntegrity = buildAssetIntegrity(snakeImageNotes[0], [
+    { kind: "image", localPath: "data/library/1.webp", status: "已保存" }
+  ]);
+  assert.equal(partialIntegrity.status, "部分入库");
+  assert.equal(partialIntegrity.raw.assetIntegrity.expected.images, 3);
+  assert.equal(partialIntegrity.raw.assetIntegrity.saved.images, 1);
+  assert.equal(partialIntegrity.raw.assetIntegrity.missing.images, 2);
+  const completeIntegrity = buildAssetIntegrity(snakeImageNotes[0], [1, 2, 3].map((idx) => ({ kind: "image", localPath: `data/library/${idx}.webp`, status: "已保存" })));
+  assert.equal(completeIntegrity.status, "完整入库");
+  assert.equal(completeIntegrity.raw.assetIntegrity.complete, true);
 
   assert.equal(fmtDate("2026-06-23T16:00:00.000Z"), "2026-06-24");
   assert.match(fmtDateTime("2026-06-23T16:00:00.000Z"), /^2026-06-24 24:00$|^2026-06-24 00:00$/);
 
   const storage = new Storage(rootDir);
+  const repairUrl = "https://www.xiaohongshu.com/explore/64abcdef1234567890abcdef?xsec_token=test";
+  const incompleteNote = storage.upsertNote({
+    sourceUrl: repairUrl,
+    noteId: "64abcdef1234567890abcdef",
+    title: "单条缺图修复测试",
+    contentType: "图文笔记",
+    raw: { source: "http:init-state", imageCount: 3, assetCount: 3 }
+  });
+  storage.addAssets(incompleteNote.id, [{ kind: "image", sourceUrl: "https://example.test/old-1.jpg", status: "已保存", imageIndex: 1 }]);
+  let repairCrawlCalls = 0;
+  const repairResult = await crawlAndStore({ url: repairUrl, skip: true, download: false }, {
+    rootDir,
+    storage,
+    crawlFn: async () => {
+      repairCrawlCalls++;
+      return [{
+        sourceUrl: repairUrl,
+        noteId: "64abcdef1234567890abcdef",
+        title: "单条缺图修复测试",
+        contentType: "图文笔记",
+        raw: { source: "http:init-state", imageCount: 3, assetCount: 3 },
+        assets: [1, 2, 3].map((idx) => ({ kind: "image", sourceUrl: `https://example.test/new-${idx}.jpg`, status: "已保存", imageIndex: idx }))
+      }];
+    }
+  });
+  assert.equal(repairCrawlCalls, 1, "已入库但缺图的单条笔记不应被 skip 跳过");
+  assert.equal(repairResult.skipped.length, 0);
+  assert.equal(storage.getNote(incompleteNote.id).assets.filter((asset) => asset.kind === "image").length, 3);
+  assert.equal(shouldRepairNoteAssets(incompleteNote, storage), true, "没有 assetIntegrity 的历史图文笔记应进入详情复核");
+  assert.equal(isNoteComplete(storage.getNote(incompleteNote.id), storage), false, "仅有 sourceUrl、未落盘的素材不能算真实完整入库");
+
   const libraryFile = path.join(rootDir, "data", "library", "安全测试", "同目录", "owned.jpg");
   const siblingFile = path.join(rootDir, "data", "library", "安全测试", "同目录", "other.jpg");
   const outsideFile = path.join(rootDir, "outside.jpg");
@@ -166,5 +254,5 @@ try {
   console.log("core-regression-test passed");
 } finally {
   await new Promise((resolve) => server.close(resolve));
-  rmSync(rootDir, { recursive: true, force: true });
+  await rmTempDirWithRetry(rootDir);
 }

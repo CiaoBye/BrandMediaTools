@@ -1,19 +1,50 @@
-import { crawlXhs, searchXhs, followAccount, saveXhsCookieFromBrowser } from "./xhsCrawler.mjs";
+import { crawlXhs, searchXhs, followAccount, saveXhsCookieFromBrowser, collectComments } from "./xhsCrawler.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
 import { checkCookieValid, decryptCookie, encryptCookie, readXhsCookie, resolveCookie } from "./xhsAuth.mjs";
 import { sendWebhook } from "./webhook.mjs";
 import { envWithSettings } from "./settings.mjs";
+import { buildAssetIntegrity, isNoteComplete, shouldRepairNoteAssets } from "./noteCompleteness.mjs";
+import { nextCronRun } from "./cron.mjs";
 
 let timer = null;
 let lastHealthCheck = 0;
 const _runningTasks = new Set(); // 任务级粒度锁，允许不同任务并发执行
 
 import { beijingNow as now } from "./time.mjs";
+import { extractXhsId } from "./xhsSdk.mjs";
 
 function addMinutes(dateStr, minutes) {
   const d = new Date(dateStr);
   d.setMinutes(d.getMinutes() + minutes);
   return d.toISOString();
+}
+
+function nextRunForTask(task) {
+  const cronExpression = String(task.cron_expression || "").trim();
+  if (cronExpression) return nextCronRun(cronExpression, now()) || addMinutes(now(), Number(task.interval_minutes || 60));
+  return task.interval_minutes > 0 ? addMinutes(now(), task.interval_minutes) : "";
+}
+
+function commentCacheFresh(storage, noteId, cacheMinutes) {
+  const info = storage.getCommentCacheInfo?.(noteId);
+  const fetchedAtMs = info?.fetchedAt ? new Date(info.fetchedAt).getTime() : 0;
+  return fetchedAtMs > 0 && (Date.now() - fetchedAtMs) < cacheMinutes * 60 * 1000;
+}
+
+function selectCommentRefreshNotes(storage, config = {}) {
+  const directIds = Array.isArray(config.noteIds) ? config.noteIds : [config.noteId, config.url].filter(Boolean);
+  if (directIds.length) {
+    return directIds.map((id) => {
+      const text = String(id || "");
+      const parsedId = extractXhsId(text);
+      return storage.getNote?.(text) || storage.findNoteByNoteId?.(text) || (parsedId ? storage.findNoteByNoteId?.(parsedId) : null) || storage.findNoteBySourceUrl?.(text);
+    }).filter(Boolean);
+  }
+  const filters = {};
+  if (config.authorId) filters.authorId = config.authorId;
+  if (config.brand) filters.brand = config.brand;
+  if (config.libraryType) filters.libraryType = config.libraryType;
+  return storage.listNotes(filters);
 }
 
 function recoverStaleRunningState(storage) {
@@ -139,6 +170,7 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
       const searchFn = options.searchXhs || searchXhs;
       const followFn = options.followAccount || followAccount;
       const persistFn = options.persistNoteAssets || persistNoteAssets;
+      const collectCommentsFn = options.collectComments || collectComments;
       // Account health check every 2 hours
       const twoHoursMs = 2 * 60 * 60 * 1000;
       if (!options.skipHealthCheck && Date.now() - lastHealthCheck > twoHoursMs) {
@@ -166,7 +198,9 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
             for (const note of notes) {
               const saved = storage.upsertNote(note);
               const assets = await persistFn(rootDir, { ...note, id: saved.id, collectedAt: saved.collectedAt });
-              storage.addAssets(saved.id, assets);
+              const integrity = buildAssetIntegrity(note, assets);
+              const finalNote = storage.upsertNote({ ...note, status: integrity.status, reviewReason: integrity.reviewReason, raw: integrity.raw });
+              storage.addAssets(finalNote.id, assets);
               noteCount++;
             }
           }
@@ -198,27 +232,44 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
                 const parsedIds = JSON.parse(followed.last_cursor);
                 if (Array.isArray(parsedIds)) {
                   knownNoteIds = parsedIds.filter(nid => {
-                    return !!storage.findNoteByNoteId(nid);
+                    const note = storage.findNoteByNoteId(nid);
+                    return note && isNoteComplete(note, storage);
                   });
                 }
               } catch { knownNoteIds = []; }
             }
             if (followed?.user_id) {
-              const dbKnownNoteIds = storage.listNotes({ authorId: followed.user_id })
+              const existingAuthorNotes = storage.listNotes({ authorId: followed.user_id });
+              const settings = envWithSettings(rootDir);
+              const maxRepairExistingNotes = Math.max(0, Number(task.config?.maxRepairExistingNotes ?? settings.xhs.maxRepairExistingNotes ?? 80));
+              const repairNoteIds = existingAuthorNotes
+                .filter(note => shouldRepairNoteAssets(note, storage))
+                .map((note) => note.noteId || extractXhsId(note.sourceUrl || ""))
+                .filter(Boolean)
+                .slice(0, maxRepairExistingNotes);
+              const repairNoteIdSet = new Set(repairNoteIds);
+              const dbKnownNoteIds = existingAuthorNotes
+                .filter(note => isNoteComplete(note, storage))
                 .map((note) => note.noteId || extractXhsId(note.sourceUrl || ""))
                 .filter(Boolean);
-              knownNoteIds = Array.from(new Set([...knownNoteIds, ...dbKnownNoteIds]));
+              knownNoteIds = Array.from(new Set([...knownNoteIds, ...dbKnownNoteIds])).filter((noteId) => !repairNoteIdSet.has(noteId));
+              task.config.repairNoteIds = repairNoteIds;
             }
-            const result = await followFn({ userId, knownNoteIds, brand: task.config.brand }, { rootDir, cookie });
+            const repairNoteIdSet = new Set(Array.isArray(task.config.repairNoteIds) ? task.config.repairNoteIds : []);
+            const result = await followFn({ userId, knownNoteIds, repairNoteIds: task.config.repairNoteIds || [], brand: task.config.brand }, { rootDir, cookie });
             let newCount = 0;
+            let repairedCount = 0;
             for (const note of result.notes) {
               const noteId = note.noteId || extractXhsId(note.sourceUrl || "");
               const existing = noteId ? storage.findNoteByNoteId(noteId) : storage.findNoteBySourceUrl(note.sourceUrl);
-              if (!existing) {
+              if (repairNoteIdSet.has(noteId) || !existing || !isNoteComplete(existing, storage)) {
                 const saved = storage.upsertNote(note);
                 const assets = await persistFn(rootDir, { ...note, id: saved.id, collectedAt: saved.collectedAt });
-                storage.addAssets(saved.id, assets);
-                newCount++;
+                const integrity = buildAssetIntegrity(note, assets);
+                const finalNote = storage.upsertNote({ ...note, status: integrity.status, reviewReason: integrity.reviewReason, raw: integrity.raw });
+                storage.addAssets(finalNote.id, assets);
+                if (existing) repairedCount++;
+                else newCount++;
               }
             }
             const updated = storage.upsertFollowedAccount({
@@ -238,13 +289,38 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
                 totalNotes: result.totalFound
               });
             }
-            noteCount = newCount;
-            if (newCount > 0) {
-              sendWebhook(rootDir, "定时跟随完成", `账号：${result.authorName || task.config.brand || userId}\n新增笔记：${newCount} 条\n总笔记：${result.totalFound} 篇`);
+            noteCount = newCount + repairedCount;
+            if (noteCount > 0) {
+              sendWebhook(rootDir, "定时跟随完成", `账号：${result.authorName || task.config.brand || userId}\n新增笔记：${newCount} 条\n修复素材：${repairedCount} 条\n总笔记：${result.totalFound} 篇`);
+            }
+          }
+          if (task.task_type === "comments_refresh") {
+            let cookie = "";
+            if (task.account_id) {
+              const account = storage.getXhsAccount(task.account_id);
+              if (account?.cookie_encrypted) cookie = decryptCookie(account.cookie_encrypted, rootDir);
+            }
+            if (!cookie || cookie.length < 30) cookie = resolveCookie(rootDir, storage);
+            const settings = envWithSettings(rootDir);
+            const cacheMinutes = Math.max(1, Number(task.config?.cacheMinutes ?? settings.xhs.commentCacheMinutes ?? 360));
+            const limit = Math.max(1, Number(task.config?.limit || 20));
+            const force = task.config?.force === true;
+            const candidates = selectCommentRefreshNotes(storage, task.config || {}).slice(0, limit);
+            for (const note of candidates) {
+              if (!note?.id || !note.sourceUrl) continue;
+              if (!force && commentCacheFresh(storage, note.id, cacheMinutes)) continue;
+              const result = await collectCommentsFn(note.sourceUrl, {
+                rootDir,
+                cookie,
+                headless: task.config?.headless ?? settings.xhs.headless,
+                proxy: task.config?.proxy || settings.xhs.proxy || ""
+              });
+              storage.saveComments(note.id, result.comments || []);
+              noteCount++;
             }
           }
 
-          const nextRun = task.interval_minutes > 0 ? addMinutes(now(), task.interval_minutes) : "";
+          const nextRun = nextRunForTask(task);
           storage.updateScheduledTask(task.id, { status: "等待中", nextRunAt: nextRun, lastRunAt: now() });
           storage.finishTaskLog(logId, "成功", `完成，处理 ${noteCount} 条`, noteCount);
         } catch (error) {
@@ -266,7 +342,7 @@ export async function runSchedulerCycle(rootDir, storage, options = {}) {
               level: "error"
             });
           } else {
-            const nextRun = task.interval_minutes > 0 ? addMinutes(now(), task.interval_minutes) : "";
+            const nextRun = nextRunForTask(task);
             storage.updateScheduledTask(task.id, { status: "失败", nextRunAt: nextRun, lastRunAt: now() });
             storage.finishTaskLog(logId, "失败", error.message);
           }

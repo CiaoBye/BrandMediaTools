@@ -5,6 +5,7 @@ import { extractXhsId, extractXhsUrls } from "./xhsSdk.mjs";
 import { crawlXhs } from "./xhsCrawler.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
 import { resolveCookie } from "./xhsAuth.mjs";
+import { buildAssetIntegrity, isNoteComplete } from "./noteCompleteness.mjs";
 
 export function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -97,7 +98,7 @@ export function serveFile(res, filePath) {
   }
 }
 
-export async function crawlAndStore(body, { rootDir, storage, apiMode = false } = {}) {
+export async function crawlAndStore(body, { rootDir, storage, apiMode = false, crawlFn = crawlXhs, persistFn = persistNoteAssets } = {}) {
   const inputText = body.url || body.shareText || "";
   const parsedUrls = extractXhsUrls(inputText);
   if (!parsedUrls.length) {
@@ -117,7 +118,7 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
   for (const parsedUrl of parsedUrls) {
     const parsedNoteId = extractXhsId(parsedUrl);
     const existing = parsedNoteId ? storage.findNoteByNoteId(parsedNoteId) || storage.findNoteBySourceUrl(parsedUrl) : storage.findNoteBySourceUrl(parsedUrl);
-    if (existing && skip) {
+    if (existing && skip && isNoteComplete(existing, storage)) {
       skipped.push(existing);
       continue;
     }
@@ -127,7 +128,7 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
     try {
       const settings = envWithSettings(rootDir);
       const cdpPort = effectiveCookie ? 0 : settings.xhs.cdpPort || 0;
-      const notes = await crawlXhs(
+      const notes = await crawlFn(
         {
           url: parsedUrl,
           originalInput: inputText,
@@ -142,12 +143,15 @@ export async function crawlAndStore(body, { rootDir, storage, apiMode = false } 
 
       for (const note of notes) {
         const savedNote = storage.upsertNote(note);
+        let assets = [];
         if (download) {
-          const assets = await persistNoteAssets(rootDir, { ...note, id: savedNote.id, collectedAt: savedNote.collectedAt });
-          storage.addAssets(savedNote.id, assets);
+          assets = await persistFn(rootDir, { ...note, id: savedNote.id, collectedAt: savedNote.collectedAt });
         } else {
-          storage.addAssets(savedNote.id, note.assets || []);
+          assets = note.assets || [];
         }
+        const integrity = buildAssetIntegrity(note, assets);
+        const finalNote = storage.upsertNote({ ...note, status: integrity.status, reviewReason: integrity.reviewReason, raw: integrity.raw });
+        storage.addAssets(finalNote.id, assets);
         savedNotes.push(storage.getNote(savedNote.id));
       }
       storage.updateJob(jobId, { status: "成功", message: "采集完成", resultCount: notes.length });

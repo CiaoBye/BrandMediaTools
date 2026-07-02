@@ -5,6 +5,7 @@ import { extractXhsUrls, crawlXhs, extractPageLinks, isXhsNoteUrl, mergeXhsLinks
 import { persistNoteAssets } from "./downloader.mjs";
 import { parseBool } from "./settings.mjs";
 import { readClipboardText } from "./clipboard.mjs";
+import { buildAssetIntegrity } from "./noteCompleteness.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -147,13 +148,16 @@ async function runInput(input, options, storage = new Storage(rootDir)) {
     );
     for (const note of notes) {
       const savedNote = storage.upsertNote(note);
+      let assets = [];
       if (options.download) {
-        const assets = await persistNoteAssets(rootDir, { ...note, id: savedNote.id, collectedAt: savedNote.collectedAt });
-        storage.addAssets(savedNote.id, assets);
+        assets = await persistNoteAssets(rootDir, { ...note, id: savedNote.id, collectedAt: savedNote.collectedAt });
       } else {
-        storage.addAssets(savedNote.id, note.assets || []);
+        assets = note.assets || [];
       }
-      output.push(summarize(storage.getNote(savedNote.id)));
+      const integrity = buildAssetIntegrity(note, assets);
+      const finalNote = storage.upsertNote({ ...note, status: integrity.status, reviewReason: integrity.reviewReason, raw: integrity.raw });
+      storage.addAssets(finalNote.id, assets);
+      output.push(summarize(storage.getNote(finalNote.id)));
     }
   }
   return output;

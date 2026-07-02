@@ -1,4 +1,4 @@
-// ===== Toast & Confirm Modal System =====
+﻿// ===== Toast & Confirm Modal System =====
 (function initFeedbackSystem() {
   const toastContainer = document.createElement("div");
   toastContainer.id = "toastContainer";
@@ -95,6 +95,137 @@ function renderEmptyState(icon, title, hint) {
 const $ = (s) => document.querySelector(s);
 const $$ = (s) => document.querySelectorAll(s);
 
+const WORKSPACE_META = {
+  "page-capture-hub": {
+    eyebrow: "采集入口",
+    title: "内容捕获",
+    desc: "链接提取、公开发现与素材入库",
+    chips: ["公开页优先", "多链接识别"]
+  },
+  "page-monitoring-hub": {
+    eyebrow: "监测中心",
+    title: "账号与任务",
+    desc: "竞品跟踪、登录态管理与运行日志",
+    chips: ["账号追踪", "定时巡检"]
+  },
+  "page-library-hub": {
+    eyebrow: "资产沉淀",
+    title: "品牌资产",
+    desc: "内容案例、素材归档与库内分析",
+    chips: ["案例库", "分析视图"]
+  },
+  "page-insights-hub": {
+    eyebrow: "运营决策",
+    title: "数据洞察",
+    desc: "采集趋势、内容分布与复盘报告",
+    chips: ["数据大盘", "周期复盘"]
+  }
+};
+
+const VIEW_META = {
+  "sub-page-ingest": { eyebrow: "内容采集", title: "快捷提取", desc: "粘贴小红书笔记/账号链接或分享文本，自动抓取并保存素材", chips: ["公开页优先", "多链接识别"] },
+  "sub-page-explore": { eyebrow: "内容采集", title: "全局发现", desc: "搜索小红书公开内容，沉淀案例与选题素材", chips: ["公开发现", "关键词搜索"] },
+  "sub-page-mon-accounts": {
+    eyebrow: "账号监测",
+    title: "竞品监控",
+    desc: "竞品账号管理、增量内容自动跟踪与更新趋势",
+    chips: ["账号监测", "增量采集"],
+    actions: `<button id="addAccountBtn" class="primary sm" style="height:28px;padding:0 12px;font-size:12px;border-radius:999px;white-space:nowrap;margin-left:8px;font-weight:700">＋ 添加账号</button>`
+  },
+  "sub-page-mon-auth": { eyebrow: "账号监测", title: "账号矩阵", desc: "登录态管理、授权绑定、Cookie 诊断与定时调度任务", chips: ["账号矩阵", "定时巡检"] },
+  "sub-page-lib-assets": { eyebrow: "资产沉淀", title: "案例明细", desc: "归档的小红书品牌内容素材、笔记明细及 AI 结构化拆解", chips: ["案例明细", "素材归档"] },
+  "sub-page-lib-analysis": {
+    eyebrow: "资产沉淀",
+    title: "库内分析",
+    desc: "归档案例的高频主题、标题钩子、开头句式与视觉风格分布统计",
+    chips: ["库内分析", "主题洞察"],
+    actions: `<select id="caRange" class="time-range-select" style="width:110px;height:28px;font-size:12px;padding:0 8px;border-radius:999px;background:var(--sidebar-hover);border:1px solid var(--line);color:var(--text);margin-left:8px;outline:none;cursor:pointer"><option value="">全部</option><option value="7">近 7 天</option><option value="30" selected>近 30 天</option><option value="90">近 90 天</option></select>`
+  },
+  "sub-page-ins-dashboard": {
+    eyebrow: "运营分析",
+    title: "数据大盘",
+    desc: "全局采集趋势、品类分布、状态监控与互动数据大盘",
+    chips: ["数据大盘", "趋势看板"],
+    actions: `<select id="dashboardRange" class="time-range-select" style="width:110px;height:28px;font-size:12px;padding:0 8px;border-radius:999px;background:var(--sidebar-hover);border:1px solid var(--line);color:var(--text);margin-left:8px;outline:none;cursor:pointer"><option value="">全部</option><option value="7" selected>近 7 天</option><option value="30">近 30 天</option><option value="90">近 90 天</option></select>`
+  },
+  "sub-page-ins-reports": { eyebrow: "运营分析", title: "复盘报告", desc: "自动生成的周报/月报，支持核心钩子与环比分析导出", chips: ["周期复盘", "报告导出"] },
+  "sub-page-mon-logs": { eyebrow: "系统", title: "运行日志", desc: "软件系统后台任务、采集请求及运行日志排障记录", chips: ["系统日志", "排障辅助"] }
+};
+
+function initWorkspaceFrames() {
+  $$(".page").forEach((page) => {
+    if (page.querySelector(":scope > .workspace-header")) return;
+    const meta = WORKSPACE_META[page.id];
+    if (!meta) return;
+    const tabs = page.querySelector(":scope > .sub-tabs");
+    const header = document.createElement("div");
+    header.className = "workspace-header";
+    header.innerHTML = `<div class="workspace-title-block">
+      <div class="workspace-eyebrow">${esc(meta.eyebrow)}</div>
+      <h1>${esc(meta.title)}</h1>
+      <p>${esc(meta.desc)}</p>
+    </div>
+    <div class="workspace-meta-chips">${meta.chips.map((chip) => `<span>${esc(chip)}</span>`).join("")}${meta.actions || ""}</div>`;
+    page.insertBefore(header, page.firstChild);
+
+    if (tabs) {
+      const tabsRow = document.createElement("div");
+      tabsRow.className = "workspace-tabs-row";
+      tabs.parentNode.insertBefore(tabsRow, tabs);
+      tabsRow.appendChild(tabs);
+    }
+  });
+}
+
+function updateWorkspaceHeader(page, subPageId) {
+  const meta = VIEW_META[subPageId] || WORKSPACE_META[page.id];
+  const header = page.querySelector(":scope > .workspace-header");
+  if (!meta || !header) return;
+  const eyebrow = header.querySelector(".workspace-eyebrow");
+  const title = header.querySelector("h1");
+  const desc = header.querySelector("p");
+  const chips = header.querySelector(".workspace-meta-chips");
+  if (eyebrow) eyebrow.textContent = meta.eyebrow;
+  if (title) title.textContent = meta.title;
+  if (desc) desc.textContent = meta.desc;
+  if (chips) {
+    chips.innerHTML = meta.chips.map((chip) => `<span>${esc(chip)}</span>`).join("") + (meta.actions || "");
+  }
+}
+
+function renderSubPage(targetSubPageId) {
+  if (targetSubPageId === "sub-page-mon-accounts") {
+    renderAccounts();
+  } else if (targetSubPageId === "sub-page-mon-auth") {
+    renderXhsAccounts();
+    renderScheduledTasks();
+  } else if (targetSubPageId === "sub-page-mon-logs") {
+    renderLogs();
+  } else if (targetSubPageId === "sub-page-lib-assets") {
+    renderNotes();
+  } else if (targetSubPageId === "sub-page-lib-analysis") {
+    renderContentAnalysis();
+  } else if (targetSubPageId === "sub-page-ins-dashboard") {
+    renderDashboard();
+  } else if (targetSubPageId === "sub-page-ins-reports") {
+    renderReports();
+  }
+}
+
+function activateWorkspacePage(pageId, subPageId) {
+  const targetPage = pageId ? document.getElementById(pageId) : null;
+  if (!targetPage) return;
+
+  $$(".page").forEach((p) => p.classList.remove("active"));
+  targetPage.classList.add("active");
+
+  const targetSubPageId = subPageId || targetPage.querySelector(".sub-tab.active")?.dataset.subPage || targetPage.querySelector(".sub-tab")?.dataset.subPage;
+  targetPage.querySelectorAll(".sub-tab").forEach((x) => x.classList.toggle("active", x.dataset.subPage === targetSubPageId));
+  targetPage.querySelectorAll(".sub-page").forEach((p) => p.classList.toggle("active", p.id === targetSubPageId));
+  updateWorkspaceHeader(targetPage, targetSubPageId);
+  renderSubPage(targetSubPageId);
+}
+
 async function api(path, opts = {}) {
   const token = document.querySelector('meta[name="app-token"]')?.getAttribute('content') || window.__APP_TOKEN__ || "";
   const r = await fetch(path, {
@@ -131,7 +262,10 @@ function dateBJ() {
 
 function fileUrl(asset) {
   if (typeof asset === "string") return `/files/${encodeURIComponent(asset).replaceAll("%2F", "/")}`;
-  return asset && asset.id ? `/api/assets/${asset.id}/file` : "";
+  if (!asset) return "";
+  if (asset.localPath && asset.id) return `/api/assets/${asset.id}/file`;
+  if (asset.localPath) return `/files/${encodeURIComponent(asset.localPath).replaceAll("%2F", "/")}`;
+  return asset.sourceUrl || asset.url || "";
 }
 
 function tagColor(kind) {
@@ -141,25 +275,15 @@ function tagColor(kind) {
   return "";
 }
 
+initWorkspaceFrames();
+
 // ===== Sidebar =====
 $$("#sidebarNav a").forEach((a) => {
   if (a.id === "themeToggleBtn") return;
   a.addEventListener("click", () => {
     $$("#sidebarNav a").forEach((x) => { if (x.id !== "themeToggleBtn") x.classList.remove("active"); });
     a.classList.add("active");
-    $$(".page").forEach((p) => p.classList.remove("active"));
-    
-    const pageId = a.dataset.page;
-    const targetPage = $(`#${pageId}`);
-    if (targetPage) {
-      targetPage.classList.add("active");
-      
-      // 激活该大 Tab 下处于 active 的子 Tab，或者默认第一个
-      const activeSubTab = targetPage.querySelector(".sub-tab.active") || targetPage.querySelector(".sub-tab");
-      if (activeSubTab) {
-        activeSubTab.click();
-      }
-    }
+    activateWorkspacePage(a.dataset.page, a.dataset.subPage);
   });
 });
 
@@ -168,34 +292,7 @@ $$(".sub-tab").forEach((tab) => {
   tab.addEventListener("click", () => {
     const pageContainer = tab.closest(".page");
     if (!pageContainer) return;
-    
-    pageContainer.querySelectorAll(".sub-tab").forEach((x) => x.classList.remove("active"));
-    tab.classList.add("active");
-    
-    pageContainer.querySelectorAll(".sub-page").forEach((p) => p.classList.remove("active"));
-    const targetSubPageId = tab.dataset.subPage;
-    const targetSubPage = document.getElementById(targetSubPageId);
-    if (targetSubPage) {
-      targetSubPage.classList.add("active");
-    }
-    
-    // 子页面重绘/渲染触发
-    if (targetSubPageId === "sub-page-mon-accounts") {
-      renderAccounts();
-    } else if (targetSubPageId === "sub-page-mon-auth") {
-      renderXhsAccounts();
-      renderScheduledTasks();
-    } else if (targetSubPageId === "sub-page-mon-logs") {
-      renderLogs();
-    } else if (targetSubPageId === "sub-page-lib-assets") {
-      renderNotes();
-    } else if (targetSubPageId === "sub-page-lib-analysis") {
-      renderContentAnalysis();
-    } else if (targetSubPageId === "sub-page-ins-dashboard") {
-      renderDashboard();
-    } else if (targetSubPageId === "sub-page-ins-reports") {
-      renderReports();
-    }
+    activateWorkspacePage(pageContainer.id, tab.dataset.subPage);
   });
 });
 
@@ -472,9 +569,14 @@ $("#accUrl").addEventListener("blur", async () => {
   if (btn) { btn.textContent = "自动识别"; btn.disabled = false; }
 });
 
-$("#addAccountBtn").addEventListener("click", () => {
-  const form = document.getElementById("newAccountForm");
-  form.style.display = form.style.display === "none" ? "block" : "none";
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("#addAccountBtn");
+  if (btn) {
+    const form = document.getElementById("newAccountForm");
+    if (form) {
+      form.style.display = form.style.display === "none" ? "block" : "none";
+    }
+  }
 });
 
 $("#cancelAccountBtn").addEventListener("click", () => {
@@ -722,6 +824,27 @@ function updateLibStats() {
 function renderNotes() {
   updateLibStats();
   const filtered = state.notes.filter(noteMatches);
+  
+  // Sorting options
+  const sortBy = $("#sortBySelect")?.value || "published_at";
+  const sortOrder = $("#sortOrderSelect")?.value || "DESC";
+  
+  filtered.sort((a, b) => {
+    let valA = a[sortBy] || a.collectedAt || "";
+    let valB = b[sortBy] || b.collectedAt || "";
+    
+    if (sortBy === "published_at") {
+      valA = a.publishedAt || "";
+      valB = b.publishedAt || "";
+    }
+    
+    if (!valA && !valB) return 0;
+    if (!valA) return sortOrder === "DESC" ? 1 : -1;
+    if (!valB) return sortOrder === "DESC" ? -1 : 1;
+    
+    const cmp = String(valA).localeCompare(String(valB));
+    return sortOrder === "DESC" ? -cmp : cmp;
+  });
   if ($("#sub-page-lib-analysis")?.classList.contains("active")) {
     renderContentAnalysis();
   }
@@ -766,7 +889,7 @@ function renderNotes() {
       <div class="lib-card-cover">
         ${imgSrc ? `<img class="lib-card-img" src="${imgSrc}" alt="" loading="lazy" />` : `<div class="lib-card-placeholder">📄</div>`}
         ${isVideo ? `<span class="lib-card-play"><svg width="12" height="12" viewBox="0 0 10 12" fill="#fff"><path d="M2.002.515 9.345 4.85a1.335 1.335 0 0 1 0 2.297L2.002 11.48A1.326 1.326 0 0 1 0 10.332V1.664A1.33 1.33 0 0 1 2.002.515"/></svg></span>` : ""}
-        ${isLive ? `<span class="lib-card-badge live">Live</span>` : ""}
+        ${isLive ? `<span class="lib-card-badge live">Live</span>` : (isVideo ? `<span class="lib-card-badge video">视频</span>` : `<span class="lib-card-badge note">图文</span>`)}
         ${hasMulti ? `<span class="lib-card-multi">${images.length}图</span>` : ""}
         ${state.selectMode ? `<label class="lib-card-cb"><input type="checkbox" class="note-checkbox" data-id="${esc(n.id)}" ${checked} /></label>` : ""}
         <div class="lib-card-actions">
@@ -970,13 +1093,14 @@ async function handleNoteClick(e) {
     fetchComments.disabled = true;
     fetchComments.textContent = "获取中…";
     try {
-      const result = await api(`/api/notes/${noteId}/comments`, { method: "POST", body: "{}" });
+      const result = await api(`/api/notes/${noteId}/comments`, { method: "POST", body: JSON.stringify({ force: true }) });
       const list = document.querySelector(`#comments-${esc(noteId)} .comments-list`);
       if (list) {
         if (!result.comments?.length) {
           list.innerHTML = '<p class="muted">暂无评论</p>';
         } else {
-          list.innerHTML = result.comments.map((c) => `
+          const cacheHint = result.fetchedAt ? `<p class="muted" style="font-size:11px;margin-bottom:8px">${result.cached ? "缓存评论" : "已更新评论"}：${esc(fmtBJ(result.fetchedAt))}</p>` : "";
+          list.innerHTML = cacheHint + result.comments.map((c) => `
             <div class="comment-item">
               <strong>${esc(c.authorName || c.author || "用户")}</strong>
               <div>${esc(c.content || "")}</div>
@@ -1079,7 +1203,7 @@ function fillNotePanel(overlay, note) {
 
   // Left: media (images + videos mixed in original order)
   const leftEl = overlay.querySelector("#ndpLeft");
-  const mediaItems = uniqueAssets.filter(a => (a.kind === "image" || a.kind === "video") && a.localPath);
+  const mediaItems = uniqueAssets.filter(a => (a.kind === "image" || a.kind === "video") && fileUrl(a));
   let leftHtml;
   if (mediaItems.length > 0) {
     const hasMulti = mediaItems.length > 1;
@@ -1121,7 +1245,7 @@ function fillNotePanel(overlay, note) {
           <div style="font-size:11px;color:var(--text-muted)">${note.brand ? esc(note.brand) : "创作者"}</div>
         </div>
       </div>
-      <button style="border-radius:999px;padding:4px 14px;font-size:12px;height:28px;background:var(--btn-bg);color:#fff;border:none;cursor:pointer">已关注</button>
+      <span style="border-radius:999px;padding:4px 12px;font-size:12px;height:28px;line-height:20px;background:var(--accent-subtle);color:var(--accent);border:1px solid rgba(20, 184, 166, 0.2);display:inline-flex;align-items:center;font-weight:600">已关注</span>
     </div>
 
     <!-- Detail Main Content -->
@@ -1198,7 +1322,8 @@ function fillNotePanel(overlay, note) {
       if (!result.comments?.length) {
         container.innerHTML = '<p class="muted" style="color:var(--text-muted);font-size:12px">暂无评论</p>';
       } else {
-        container.innerHTML = result.comments.map(c => `
+        const cacheHint = result.fetchedAt ? `<div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">${result.cached ? "缓存评论" : "已更新评论"}：${esc(fmtBJ(result.fetchedAt))}</div>` : "";
+        container.innerHTML = cacheHint + result.comments.map(c => `
           <div style="padding-bottom:8px;border-bottom:1px solid var(--line-light);font-size:12px">
             <strong style="color:var(--text)">${esc(c.authorName || c.author || "用户")}</strong>
             <div style="margin:4px 0 2px;color:var(--text-secondary);line-height:1.4">${esc(c.content || "")}</div>
@@ -1330,19 +1455,22 @@ function renderScheduledTasks() {
     if (!tasks.length) {
       list.innerHTML = '<div class="empty-state" style="min-height:40px"><p>暂无定时任务</p></div>';
     } else {
-      list.innerHTML = tasks.map((t) => `
+      list.innerHTML = tasks.map((t) => {
+        const schedulePlan = t.cron_expression ? `Cron ${t.cron_expression}` : `${t.interval_minutes}分钟间隔`;
+        return `
         <div class="schedule-item">
           <div class="schedule-info">
             <strong>${esc(t.name)}</strong>
             <span class="tag ${t.status === "运行中" ? "running" : t.status === "失败" ? "red" : "green"}">${esc(t.status)}</span>
           </div>
-          <div class="schedule-meta">${esc(t.task_type)} · ${t.interval_minutes}分钟间隔 · ${t.last_run_at ? `上次：${fmtBJ(t.last_run_at)}` : "未运行"}</div>
+          <div class="schedule-meta">${esc(t.task_type)} · ${esc(schedulePlan)} · ${t.next_run_at ? `下次：${fmtBJ(t.next_run_at)}` : "无下次"} · ${t.last_run_at ? `上次：${fmtBJ(t.last_run_at)}` : "未运行"}</div>
           <div class="schedule-actions">
             <button class="ghost sm" data-schedule-toggle="${esc(t.id)}">${t.enabled ? "暂停" : "启用"}</button>
             <button class="ghost sm" style="color:var(--red)" data-schedule-delete="${esc(t.id)}">删除</button>
           </div>
         </div>
-      `).join("");
+      `;
+      }).join("");
       list.querySelectorAll("[data-schedule-toggle]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const task = state.scheduledTasks.find((t) => t.id === btn.dataset.scheduleToggle);
@@ -1462,14 +1590,23 @@ $("#saveScheduleBtn")?.addEventListener("click", async () => {
   const type = $("#scheduleType").value;
   const accountId = $("#scheduleAccount").value;
   const interval = Number($("#scheduleInterval").value) || 60;
-  if (!name || !url) return;
+  const cronExpression = $("#scheduleCron")?.value.trim() || "";
+  if (cronExpression && cronExpression.split(/\s+/).length !== 5) {
+    showToast("Cron 表达式需要 5 段，例如 0 9 * * *", "error");
+    return;
+  }
+  if (!name || (type !== "comments_refresh" && !url)) return;
   try {
     let config;
     if (type === "search") config = { keyword: url };
     else if (type === "follow") config = { authorUrl: url, brand: "" };
+    else if (type === "comments_refresh") {
+      const looksLikeUrl = /^https?:\/\//i.test(url);
+      config = looksLikeUrl ? { url, limit: 1 } : { brand: url || "", limit: 20 };
+    }
     else config = { url };
-    await api("/api/scheduled-tasks", { method: "POST", body: JSON.stringify({ name, taskType: type, config, accountId: accountId || null, intervalMinutes: interval }) });
-    $("#scheduleName").value = ""; $("#scheduleUrl").value = "";
+    await api("/api/scheduled-tasks", { method: "POST", body: JSON.stringify({ name, taskType: type, config, accountId: accountId || null, intervalMinutes: interval, cronExpression }) });
+    $("#scheduleName").value = ""; $("#scheduleUrl").value = ""; if ($("#scheduleCron")) $("#scheduleCron").value = "";
     document.getElementById("scheduleForm").style.display = "none";
     renderScheduledTasks();
   } catch (e) { showToast("创建失败：" + e.message, "error"); }
@@ -1500,6 +1637,7 @@ async function renderDashboard() {
     $("#statXhsAccounts").textContent = stats.overview.totalXhsAccounts;
     $("#statJobs").textContent = stats.overview.totalJobs;
     $("#statAnalysis").textContent = stats.overview.totalAnalysis;
+    $("#statAssetPartial").textContent = stats.overview.assetPartialNotes || 0;
     renderDashboardLists(topNotes, tagCloud);
     renderBrandCompare();
     if (!chartAvailable()) {
@@ -1513,14 +1651,18 @@ async function renderDashboard() {
   } catch (e) { console.warn("仪表盘渲染异常:", e.message); }
 }
 
-$("#dashboardRange")?.addEventListener("change", renderDashboard);
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "dashboardRange") {
+    renderDashboard();
+  }
+});
 
 function renderCharts(s, interaction) {
   const chartOpts = (type, labels, data, colors, label) => ({
     type, data: { labels, datasets: [{ data, backgroundColor: colors, borderColor: colors.map(() => "transparent"), borderWidth: 0, label: label || "" }] },
     options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: type === "pie", position: "bottom", labels: { boxWidth: 12, padding: 8, font: { size: 11 } } } }, scales: type === "bar" ? { y: { beginAtZero: true, ticks: { font: { size: 11 } } }, x: { ticks: { font: { size: 11 } } } } : {} }
   });
-  const COLORS = ["#7c3aed", "#06b6d4", "#db2777", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#6366f1"];
+  const COLORS = ["#14b8a6", "#f59e0b", "#ef6f61", "#475569", "#38bdf8", "#84cc16", "#a855f7", "#64748b", "#0f766e", "#fb7185"];
 
   if (window.trendChart) window.trendChart.destroy();
   if (window.typeChart) window.typeChart.destroy();
@@ -1635,7 +1777,7 @@ async function renderBrandCompare() {
 }
 
 // ===== Content Analysis =====
-const CA_COLORS = ["#7c3aed", "#06b6d4", "#db2777", "#3b82f6", "#10b981", "#f59e0b", "#8b5cf6", "#ec4899", "#14b8a6", "#6366f1"];
+const CA_COLORS = ["#14b8a6", "#f59e0b", "#ef6f61", "#475569", "#38bdf8", "#84cc16", "#a855f7", "#64748b", "#0f766e", "#fb7185"];
 
 async function renderContentAnalysis() {
   const range = $("#caRange")?.value || "";
@@ -1670,7 +1812,11 @@ async function renderContentAnalysis() {
   } catch (e) { console.warn("内容分析渲染异常:", e.message); }
 }
 
-$("#caRange")?.addEventListener("change", renderContentAnalysis);
+document.addEventListener("change", (e) => {
+  if (e.target && e.target.id === "caRange") {
+    renderContentAnalysis();
+  }
+});
 
 function renderCaCharts(data) {
   const chartsToDestroy = ["caHookChart", "caPatternChart", "caTypeChart", "caGoalChart", "caVisualChart", "caLibChart"];
@@ -2048,6 +2194,7 @@ function renderCrawlTab() {
     ${renderNum("xhs.maxAccountNotes", "账号最大作品数", s.maxAccountNotes)}
     ${renderNum("xhs.accountScrollPages", "滚动加载轮数", s.accountScrollPages)}
     ${renderNum("xhs.accountScrollDelayMs", "滚动等待(ms)", s.accountScrollDelayMs)}
+    ${renderNum("xhs.accountHttpParallel", "账号详情 HTTP 并发数", s.accountHttpParallel || 4)}
     ${renderText("xhs.proxy", "代理地址", "如 http://127.0.0.1:10808", s.proxy)}
     ${renderText("xhs.userAgent", "User-Agent（用户代理）", "", s.userAgent)}
     ${renderText("xhs.browserExecutable", "浏览器路径", "留空自动寻找", s.browserExecutable)}
@@ -2055,6 +2202,7 @@ function renderCrawlTab() {
     ${renderNum("xhs.cdpPort", "Chrome 调试端口", s.cdpPort || 9222)}
     ${renderBool("xhs.autoRefreshCookie", "两小时 Cookie 自动复检/刷新", "健康巡检时如果专用浏览器 profile 已有登录态，会自动刷新单账号 Cookie", s.autoRefreshCookie !== false)}
     ${renderNum("xhs.cookieRefreshWaitMs", "后台刷新等待(ms)", s.cookieRefreshWaitMs || 8000)}
+    ${renderText("xhs.defaultScheduleCron", "定时任务默认 Cron", "可选，5 段表达式；为空则使用任务间隔分钟，如 0 9 * * *", s.defaultScheduleCron || "")}
     <div style="font-size:11px;color:var(--text-muted);margin-top:4px">系统使用项目专属 <code>.browser-profile/chrome-cdp</code> 保存授权态，不会读取或解密你的系统浏览器 Cookie。登录主流程已简化为专用浏览器绑定；手动完整 Cookie 只作为兜底入口。</div>
   </div>`;
 }
@@ -2606,6 +2754,12 @@ async function renderBatchExportModal() {
 }
 
 // ===== Logs =====
+function fmtLogTime(timeStr) {
+  if (!timeStr) return "";
+  const match = timeStr.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2}:\d{2})/);
+  return match ? `${match[1]} ${match[2]}` : timeStr;
+}
+
 async function renderLogs() {
   const list = $("#logList");
   try {
@@ -2619,7 +2773,7 @@ async function renderLogs() {
       if (!match) return `<div class="log-line log-level-info">${esc(line)}</div>`;
       const [, time, level, msg] = match;
       const levelClass = `log-level-${level.toLowerCase()}`;
-      return `<div class="log-line ${levelClass}"><span class="log-time">${esc(time)}</span> <span class="log-level-tag">${esc(level)}</span> <span class="log-msg">${esc(msg)}</span></div>`;
+      return `<div class="log-line ${levelClass}"><span class="log-time">${esc(fmtLogTime(time))}</span> <span class="log-level-tag">${esc(level)}</span> <span class="log-msg">${esc(msg)}</span></div>`;
     }).join("");
   } catch { list.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><p>加载日志失败</p></div>'; }
 }
@@ -2649,16 +2803,26 @@ $("#logSearch").addEventListener("input", function () {
         const match = line.match(/^\[(.+?)\]\s*\[(\w+)\]\s*(.+)$/);
         if (!match) return `<div class="log-line log-level-info">${esc(line)}</div>`;
         const [, time, level, msg] = match;
-        return `<div class="log-line log-level-${level.toLowerCase()}"><span class="log-time">${esc(time)}</span> <span class="log-level-tag">${esc(level)}</span> <span class="log-msg">${esc(msg)}</span></div>`;
+        return `<div class="log-line log-level-${level.toLowerCase()}"><span class="log-time">${esc(fmtLogTime(time))}</span> <span class="log-level-tag">${esc(level)}</span> <span class="log-msg">${esc(msg)}</span></div>`;
       }).join("");
     } catch { /* ignore */ }
   }, 300);
 });
 
+setInterval(() => {
+  const logsPage = $("#sub-page-mon-logs");
+  const search = $("#logSearch");
+  if (logsPage?.classList.contains("active") && !search?.value.trim()) {
+    renderLogs();
+  }
+}, 3000);
+
 // ===== Search & Filter =====
 $("#searchInput").addEventListener("input", () => { resetRenderLimit(); clearSelection(); renderNotes(); });
 $("#brandFilter").addEventListener("change", () => { resetRenderLimit(); clearSelection(); renderNotes(); });
 $("#contentTypeFilter").addEventListener("change", () => { resetRenderLimit(); clearSelection(); renderNotes(); });
+$("#sortBySelect")?.addEventListener("change", () => { resetRenderLimit(); renderNotes(); });
+$("#sortOrderSelect")?.addEventListener("change", () => { resetRenderLimit(); renderNotes(); });
 
 // ===== Library Tab =====
 document.querySelectorAll(".lib-tab").forEach((tab) => {
@@ -2704,6 +2868,53 @@ async function refresh() {
   renderNotes();
 }
 
+// ===== Global Task Progress =====
+let _lastActiveJobState = false;
+function initGlobalTaskProgress() {
+  setInterval(async () => {
+    try {
+      const jobs = await api("/api/jobs");
+      const activeJob = jobs.find(j => j.status === "运行中");
+      const bar = $("#globalTaskProgress");
+      if (!bar) return;
+      
+      if (activeJob) {
+        _lastActiveJobState = true;
+        bar.style.display = "flex";
+        
+        let title = "正在采集数据...";
+        if (activeJob.input_url.startsWith("follow:")) {
+          const authorId = activeJob.input_url.replace("follow:", "");
+          const matched = state.followedAccounts?.find(a => a.user_id === authorId);
+          title = `正在监控博主: ${matched?.author_name || authorId}`;
+        }
+        
+        bar.querySelector(".gp-title").textContent = title;
+        bar.querySelector(".gp-message").textContent = activeJob.message || "初始化采集...";
+      } else {
+        if (_lastActiveJobState) {
+          _lastActiveJobState = false;
+          bar.querySelector(".gp-spinner").style.borderColor = "var(--success-color)";
+          bar.querySelector(".gp-title").textContent = "✅ 抓取任务完成！";
+          bar.querySelector(".gp-message").textContent = "所有数据和素材已全部入库。";
+          
+          refresh();
+          
+          setTimeout(() => {
+            bar.style.display = "none";
+            bar.querySelector(".gp-spinner").style.borderColor = "";
+          }, 4000);
+        } else {
+          bar.style.display = "none";
+        }
+      }
+    } catch (e) {
+      console.warn("Poll active job failed:", e);
+    }
+  }, 4000);
+}
+initGlobalTaskProgress();
+
 loadRecentBrands();
 refresh().catch((e) => { $("#crawlStatus").textContent = `初始化失败：${e.message}`; });
 
@@ -2739,3 +2950,4 @@ function showSkeleton(container, count = 6) {
 }
 
 // ===== Floating Batch Bar (already inline, add float behavior via CSS) =====
+

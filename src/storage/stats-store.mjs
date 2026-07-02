@@ -11,9 +11,28 @@ export function createStatsStore(db, getNote, listAssetsByNote) {
     return `collected_at >= '${d.toISOString()}'`;
   }
 
+  function assetIntegrityOverview(whereSql) {
+    const rows = _(`SELECT raw, status FROM notes ${whereSql}`).all();
+    const result = { needsRepair: 0 };
+    for (const row of rows) {
+      const raw = fromJson(row.raw, {});
+      const integrity = raw.assetIntegrity || null;
+      if (!integrity) continue;
+      const expected = integrity.expected || {};
+      const saved = integrity.saved || {};
+      const missing = integrity.missing || {};
+      const expectedTotal = Number(expected.total || 0);
+      const savedTotal = Number(saved.total || 0);
+      const missingTotal = Number(missing.total || 0);
+      if (integrity.complete === false && expectedTotal > 0 && (missingTotal > 0 || savedTotal < expectedTotal)) result.needsRepair++;
+    }
+    return result;
+  }
+
   return {
     getStats(range) {
       const wd = range ? `WHERE ${dateFilter(range)}` : "";
+      const assetIntegrity = assetIntegrityOverview(wd);
       const overview = {
         totalNotes: _(`SELECT COUNT(*) as c FROM notes ${wd}`).get().c,
         totalAssets: _("SELECT COUNT(*) as c FROM assets").get().c,
@@ -21,6 +40,7 @@ export function createStatsStore(db, getNote, listAssetsByNote) {
         totalXhsAccounts: _("SELECT COUNT(*) as c FROM xhs_accounts").get().c,
         totalJobs: _("SELECT COUNT(*) as c FROM crawl_jobs").get().c,
         totalAnalysis: _("SELECT COUNT(*) as c FROM analysis").get().c,
+        assetPartialNotes: assetIntegrity.needsRepair,
       };
       const byType = _(`SELECT content_type, COUNT(*) as count FROM notes WHERE content_type != '' ${range ? "AND " + dateFilter(range) : ""} GROUP BY content_type ORDER BY count DESC`).all();
       const byBrand = _(`SELECT brand, COUNT(*) as count FROM notes WHERE brand != '' ${range ? "AND " + dateFilter(range) : ""} GROUP BY brand ORDER BY count DESC LIMIT 10`).all();

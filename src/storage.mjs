@@ -32,6 +32,7 @@ export class Storage {
     this.saveAnalysis = this.notes.saveAnalysis.bind(this.notes);
     this.getComments = this.notes.getComments.bind(this.notes);
     this.saveComments = this.notes.saveComments.bind(this.notes);
+    this.getCommentCacheInfo = this.notes.getCommentCacheInfo.bind(this.notes);
     this.createJob = this.notes.createJob.bind(this.notes);
     this.updateJob = this.notes.updateJob.bind(this.notes);
     this.listJobs = this.notes.listJobs.bind(this.notes);

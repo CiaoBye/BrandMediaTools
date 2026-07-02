@@ -144,7 +144,7 @@ export function createNoteStore(db, rootDir) {
       const needsPostFilter = !!(filters.q || filters.assetKind);
       let sql = "SELECT * FROM notes";
       if (conditions.length) sql += " WHERE " + conditions.join(" AND ");
-      sql += " ORDER BY collected_at DESC";
+      sql += " ORDER BY COALESCE(NULLIF(published_at, ''), collected_at) DESC";
       const rows = _(sql).all(...params);
       if (!needsPostFilter) return batchHydrateNotes(rows);
       return batchHydrateNotes(rows).filter((note) => {
@@ -178,7 +178,7 @@ export function createNoteStore(db, rootDir) {
     deleteNote(id) {
       const existing = _("SELECT * FROM notes WHERE id = ?").get(id);
       if (!existing) return false;
-      deleteNoteFiles(id, existing);
+      const assetsToDelete = db.prepare("SELECT * FROM assets WHERE note_id = ?").all(id);
       db.exec("BEGIN");
       try {
         _("DELETE FROM assets WHERE note_id = ?").run(id);
@@ -186,6 +186,8 @@ export function createNoteStore(db, rootDir) {
         _("DELETE FROM crawl_jobs WHERE input_url = ?").run(existing.source_url);
         _("DELETE FROM notes WHERE id = ?").run(id);
         db.exec("COMMIT");
+        // 数据库事务提交成功后才删除物理文件，避免 COMMIT 回滚导致悬挂指针
+        try { deleteNoteFiles(id, existing, assetsToDelete); } catch (fileErr) { console.warn("[note-store] 删除笔记文件失败:", fileErr.message); }
       } catch (e) {
         try { db.exec("ROLLBACK"); } catch {}
         throw e;
@@ -195,19 +197,24 @@ export function createNoteStore(db, rootDir) {
 
     batchDeleteNotes(ids) {
       if (!ids || !ids.length) return 0;
+      const filesToDelete = [];
       db.exec("BEGIN");
       try {
         let count = 0;
         for (const id of ids) {
           const existing = _("SELECT * FROM notes WHERE id = ?").get(id);
           if (!existing) continue;
-          deleteNoteFiles(id, existing);
+          const assetsToDelete = db.prepare("SELECT * FROM assets WHERE note_id = ?").all(id);
+          filesToDelete.push({ id, note: existing, assets: assetsToDelete });
           _("DELETE FROM assets WHERE note_id = ?").run(id);
           _("DELETE FROM analysis WHERE note_id = ?").run(id);
           _("DELETE FROM notes WHERE id = ?").run(id);
           count++;
         }
         db.exec("COMMIT");
+        for (const item of filesToDelete) {
+          try { deleteNoteFiles(item.id, item.note, item.assets); } catch (fileErr) { console.warn("[note-store] 批量删除笔记文件失败:", fileErr.message); }
+        }
         return count;
       } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
     },
@@ -225,9 +232,11 @@ export function createNoteStore(db, rootDir) {
       const stmt = _("INSERT INTO comments (id, note_id, parent_id, author_name, author_id, content, likes, time, raw, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
       for (const c of comments) {
         const replies = c.replies || [];
-        stmt.run(randomUUID(), noteId, null, c.author || c.authorName || "", c.authorId || "", c.content || "", Number(c.likes || 0), c.time || "", toJson(c, {}), time);
-        for (const r of replies) { stmt.run(randomUUID(), noteId, c.id || null, r.author || r.authorName || "", r.authorId || "", r.content || "", Number(r.likes || 0), r.time || "", toJson(r, {}), time); }
+        const parentId = randomUUID();
+        stmt.run(parentId, noteId, null, c.author || c.authorName || "", c.authorId || "", c.content || "", Number(c.likes || 0), c.time || "", toJson(c, {}), time);
+        for (const r of replies) { stmt.run(randomUUID(), noteId, parentId, r.author || r.authorName || "", r.authorId || "", r.content || "", Number(r.likes || 0), r.time || "", toJson(r, {}), time); }
       }
+      _("INSERT OR REPLACE INTO app_meta (key, value) VALUES (?, ?)").run(`comments:last_fetch:${noteId}`, time);
       return store.getComments(noteId);
     },
 
@@ -240,6 +249,12 @@ export function createNoteStore(db, rootDir) {
         else { top.push(c); }
       }
       return top.map((c) => ({ ...c, replies: replyMap[c.id] || [] }));
+    },
+
+    getCommentCacheInfo(noteId) {
+      const row = _("SELECT value FROM app_meta WHERE key = ?").get(`comments:last_fetch:${noteId}`);
+      const count = _("SELECT COUNT(*) AS count FROM comments WHERE note_id = ? AND parent_id IS NULL").get(noteId)?.count || 0;
+      return { fetchedAt: row?.value || "", count };
     },
 
     createJob(inputUrl) {
@@ -342,7 +357,7 @@ export function createNoteStore(db, rootDir) {
 
   return store;
 
-  function deleteNoteFiles(id, note) {
+  function deleteNoteFiles(id, note, noteAssets = null) {
     const settings = envWithSettings(rootDir);
     const rawFolder = settings.download?.folderName || "library";
     const libraryRoot = path.resolve(path.isAbsolute(rawFolder) ? rawFolder : path.join(rootDir, "data", rawFolder));
@@ -352,7 +367,7 @@ export function createNoteStore(db, rootDir) {
       return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
     };
     const dirs = new Set();
-    const assets = db.prepare("SELECT * FROM assets WHERE note_id = ?").all(id);
+    const assets = noteAssets || db.prepare("SELECT * FROM assets WHERE note_id = ?").all(id);
     for (const asset of assets) {
       if (!asset.local_path) continue;
       const fullPath = path.resolve(path.isAbsolute(asset.local_path) ? asset.local_path : path.join(rootDir, asset.local_path));

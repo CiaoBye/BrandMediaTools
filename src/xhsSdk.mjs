@@ -1,4 +1,4 @@
-﻿import path from "node:path";
+import path from "node:path";
 import { spawn, execSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, readdirSync, writeFileSync, rmSync } from "node:fs";
@@ -257,8 +257,9 @@ export function bestStreamUrl(stream) {
   for (const codec of codecOrder) {
     const variants = Array.isArray(stream[codec]) ? stream[codec] : [];
     for (const variant of variants) {
-      if (variant?.masterUrl) return variant.masterUrl;
+      if (variant?.masterUrl || variant?.master_url) return variant.masterUrl || variant.master_url;
       if (Array.isArray(variant?.backupUrls) && variant.backupUrls[0]) return variant.backupUrls[0];
+      if (Array.isArray(variant?.backup_urls) && variant.backup_urls[0]) return variant.backup_urls[0];
     }
   }
   return "";
@@ -274,7 +275,7 @@ export function bestImageUrls(image) {
   if (!image || typeof image !== "object") return [];
   const candidates = [];
 
-  if (image.urlDefault) candidates.push({ url: image.urlDefault, w: image.width || 0, h: image.height || 0, priority: 0, source: "urlDefault" });
+  if (image.urlDefault || image.url_default) candidates.push({ url: image.urlDefault || image.url_default, w: image.width || 0, h: image.height || 0, priority: 0, source: image.urlDefault ? "urlDefault" : "url_default" });
 
   const infoList = Array.isArray(image.infoList) ? image.infoList : Array.isArray(image.info_list) ? image.info_list : [];
   const thumbScenes = new Set(["WB_PRV", "CRD_PRV"]);
@@ -361,22 +362,30 @@ export function bestVideoStreams(stream) {
 
 export function normalizeStructuredAssets(noteData) {
   const assets = [];
-  const imageList = Array.isArray(noteData?.imageList) ? noteData.imageList : [];
+  const imageList = ["imageList", "image_list", "images", "imgs", "image"]
+    .map((key) => noteData?.[key])
+    .find((value) => Array.isArray(value)) || [];
   for (let index = 0; index < imageList.length; index += 1) {
-    const image = imageList[index];
-    const imageUrl = cleanAssetUrl(bestImageUrl(image));
+    const image = imageList[index]?.image || imageList[index]?.imageInfo || imageList[index]?.image_info || imageList[index];
+    const seenUrls = new Set();
+    const candidates = bestImageUrls(image).flatMap((item) => [item.url, item.cdnUrl]).map(cleanAssetUrl).filter(Boolean).filter((url) => {
+      if (seenUrls.has(url)) return false;
+      seenUrls.add(url);
+      return true;
+    });
+    const imageUrl = candidates[0] || cleanAssetUrl(bestImageUrl(image));
     const base = {
       width: image.width || null,
       height: image.height || null,
       imageIndex: index + 1,
-      livePhoto: Boolean(image.livePhoto),
-      fileId: image.fileId || "",
-      traceId: image.traceId || ""
+      livePhoto: Boolean(image.livePhoto || image.live_photo),
+      fileId: image.fileId || image.file_id || "",
+      traceId: image.traceId || image.trace_id || ""
     };
     if (imageUrl) {
-      assets.push({ ...base, kind: "image", url: imageUrl, source: "initial-state:imageList" });
+      assets.push({ ...base, kind: "image", url: imageUrl, sourceUrl: imageUrl, fallbackUrls: candidates.slice(1), source: "initial-state:imageList" });
     }
-    if (image.livePhoto) {
+    if (image.livePhoto || image.live_photo) {
       const streamUrl = cleanAssetUrl(bestStreamUrl(image.stream));
       if (streamUrl) {
         assets.push({ ...base, kind: "livePhoto", url: streamUrl, source: "initial-state:imageList.stream", pairedImageIndex: index + 1 });
@@ -664,6 +673,10 @@ export async function createBrowser(rootDir, options = {}) {
       ]
     };
     if (settings.xhs.browserExecutable) launchOpts.executablePath = settings.xhs.browserExecutable;
+    const proxyUrl = options.proxy || settings.xhs.proxy || process.env.XHS_PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || "";
+    if (proxyUrl) {
+      launchOpts.proxy = { server: proxyUrl };
+    }
     browser = await chromium.launch(launchOpts);
 
     const viewports = [

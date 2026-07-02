@@ -1,6 +1,6 @@
 {
   "name": "brand-content-intelligence-xhs",
-  "version": "1.13.9",
+  "version": "1.14.9",
   "private": true,
   "type": "module",
   "main": "electron/main.cjs",
@@ -42,7 +42,7 @@
   },
   "build": {
     "appId": "com.brandmedia.tool",
-    "productName": "品牌内容情报工具",
+    "productName": "鍝佺墝鍐呭鎯呮姤宸ュ叿",
     "directories": {
       "output": "release"
     },
@@ -81,3 +81,4 @@
     "electron-builder": "^26.15.3"
   }
 }
+

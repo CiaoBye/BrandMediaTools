@@ -54,6 +54,10 @@ try {
     assert.ok(analysis.body.engagementStats.totalNotes > 0, "有笔记时互动统计不应全部被跳过");
   }
 
+  const stats = await request("/api/stats?range=30");
+  assert.equal(stats.response.status, 200);
+  assert.equal(typeof stats.body.overview.assetPartialNotes, "number", "stats.overview.assetPartialNotes 应为数字");
+
   const chart = await request("/vendor/chart.umd.js");
   assert.equal(chart.response.status, 200);
   assert.match(chart.text, /Chart/);

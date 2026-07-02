@@ -23,10 +23,30 @@
         <p>小红书内容采集 · AI 拆解 · 素材归档</p>
       </div>
       <nav class="sidebar-nav" id="sidebarNav">
-        <a class="active" data-page="page-capture-hub"><span class="icon">📥</span> 内容捕获</a>
-        <a data-page="page-monitoring-hub"><span class="icon">👥</span> 监测中心</a>
-        <a data-page="page-library-hub"><span class="icon">📚</span> 品牌资产</a>
-        <a data-page="page-insights-hub"><span class="icon">📊</span> 运营决策</a>
+        <div class="sidebar-group">
+          <div class="sidebar-group-title">内容采集</div>
+          <a class="active" data-page="page-capture-hub" data-sub-page="sub-page-ingest"><span class="icon">🔗</span> 快捷提取</a>
+          <a data-page="page-capture-hub" data-sub-page="sub-page-explore"><span class="icon">🔍</span> 全局发现</a>
+        </div>
+        <div class="sidebar-group">
+          <div class="sidebar-group-title">账号监测</div>
+          <a data-page="page-monitoring-hub" data-sub-page="sub-page-mon-accounts"><span class="icon">👥</span> 竞品监控</a>
+          <a data-page="page-monitoring-hub" data-sub-page="sub-page-mon-auth"><span class="icon">🔑</span> 账号矩阵</a>
+        </div>
+        <div class="sidebar-group">
+          <div class="sidebar-group-title">资产沉淀</div>
+          <a data-page="page-library-hub" data-sub-page="sub-page-lib-assets"><span class="icon">📂</span> 案例明细</a>
+          <a data-page="page-library-hub" data-sub-page="sub-page-lib-analysis"><span class="icon">🧠</span> 库内分析</a>
+        </div>
+        <div class="sidebar-group">
+          <div class="sidebar-group-title">运营分析</div>
+          <a data-page="page-insights-hub" data-sub-page="sub-page-ins-dashboard"><span class="icon">📈</span> 数据大盘</a>
+          <a data-page="page-insights-hub" data-sub-page="sub-page-ins-reports"><span class="icon">📄</span> 复盘报告</a>
+        </div>
+        <div class="sidebar-group sidebar-group-system">
+          <div class="sidebar-group-title">系统</div>
+          <a data-page="page-monitoring-hub" data-sub-page="sub-page-mon-logs"><span class="icon">📋</span> 运行日志</a>
+        </div>
       </nav>
       <div class="sidebar-footer">
         <a id="sidebarNotifications" class="sidebar-footer-btn" title="查看通知">
@@ -53,10 +73,6 @@
 
         <!-- 子页面 1：快捷提取 -->
         <div id="sub-page-ingest" class="sub-page active">
-          <div class="page-header">
-            <h2>快捷提取</h2>
-            <p>粘贴小红书链接或分享文本，自动提取并保存素材</p>
-          </div>
           <div class="crawl-panel">
             <div class="crawl-input-row">
               <textarea id="crawlUrl" placeholder="粘贴小红书笔记/账号链接，或整段分享文本（支持多条）" rows="2"></textarea>
@@ -83,10 +99,6 @@
 
         <!-- 子页面 2：全局发现 -->
         <div id="sub-page-explore" class="sub-page">
-          <div class="page-header">
-            <h2>全局发现</h2>
-            <p>搜索小红书公开笔记内容</p>
-          </div>
           <div class="card">
             <div class="crawl-search-row">
               <input id="searchKeyword" placeholder="输入搜索关键词（如\"护发素 2025\"）" />
@@ -110,13 +122,6 @@
 
         <!-- 子页面 1：竞品监控 -->
         <div id="sub-page-mon-accounts" class="sub-page active">
-          <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
-            <div>
-              <h2>账号追踪</h2>
-              <p>竞品账号管理、长期内容跟踪与趋势分析</p>
-            </div>
-            <button id="addAccountBtn" class="primary sm" style="width:auto;padding:0 16px">＋ 添加账号</button>
-          </div>
           <div id="newAccountForm" style="display:none" class="card">
             <div class="card-header"><h3>添加账号</h3></div>
             <div class="form-row">
@@ -149,10 +154,6 @@
 
         <!-- 子页面 2：账号矩阵 -->
         <div id="sub-page-mon-auth" class="sub-page">
-          <div class="page-header">
-            <h2>小红书账号管理</h2>
-            <p>登录入口已收敛为「专用浏览器绑定」与「手动完整 Cookie 兜底」，降低误操作和重复认证。</p>
-          </div>
           <div class="card-grid two-col">
             <div class="card">
               <div class="card-header"><h3>绑定账号</h3></div>
@@ -212,16 +213,18 @@
             <div id="scheduleForm" style="display:none;margin-bottom:12px;padding:12px;border:1px solid var(--line);border-radius:var(--radius)">
               <div class="form-row three" style="grid-template-columns:1fr 1fr 80px">
                 <input id="scheduleName" placeholder="任务名称" />
-                <input id="scheduleUrl" placeholder="采集链接或搜索关键词" />
+                <input id="scheduleUrl" placeholder="采集链接、搜索词或评论刷新范围" />
                 <select id="scheduleType">
                   <option value="crawl">采集</option>
                   <option value="search">搜索</option>
                   <option value="follow">跟随账号</option>
+                  <option value="comments_refresh">刷新评论</option>
                 </select>
               </div>
-              <div class="form-row three" style="margin-top:6px;grid-template-columns:1fr 1fr 80px">
+              <div class="form-row three" style="margin-top:6px;grid-template-columns:1fr 120px 1fr 80px">
                 <select id="scheduleAccount"><option value="">所有账号</option></select>
                 <input id="scheduleInterval" type="number" value="60" min="10" placeholder="间隔(分钟)" />
+                <input id="scheduleCron" placeholder="Cron 可选，如 0 9 * * *" />
                 <button id="saveScheduleBtn" class="ghost sm">保存</button>
               </div>
             </div>
@@ -248,12 +251,13 @@
 
         <!-- 子页面 3：运行日志 -->
         <div id="sub-page-mon-logs" class="sub-page">
-          <div class="page-header" style="display:flex;justify-content:space-between;align-items:flex-start">
-            <div><h2>运行日志</h2><p>软件操作记录，便于排查分析</p></div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input id="logSearch" placeholder="搜索日志..." style="width:200px;font-size:13px;padding:6px 10px" />
-              <button id="logRefreshBtn" class="ghost sm" style="padding:0 12px">刷新</button>
-              <button id="logClearBtn" class="ghost sm" style="padding:0 12px">清空</button>
+          <div class="log-toolbar">
+            <div class="log-search-wrapper">
+              <input id="logSearch" placeholder="搜索日志..." />
+            </div>
+            <div class="log-actions">
+              <button id="logRefreshBtn" class="ghost sm">刷新</button>
+              <button id="logClearBtn" class="ghost sm" style="color:var(--red)">清空</button>
             </div>
           </div>
           <div class="card">
@@ -276,24 +280,21 @@
 
         <!-- 子页面 1：案例明细 -->
         <div id="sub-page-lib-assets" class="sub-page active">
-          <div class="lib-profile">
-            <div class="lib-avatar"><span class="lib-avatar-letter">📚</span></div>
-            <div class="lib-info">
-              <h2 class="lib-name">内容案例库</h2>
-              <p class="lib-desc">品牌内容素材与 AI 拆解归档</p>
-              <div class="lib-stats">
-                <span><strong id="libStatNotes">0</strong> 笔记</span>
-                <span><strong id="libStatBrands">0</strong> 品牌</span>
-                <span><strong id="libStatAssets">0</strong> 素材</span>
-              </div>
-            </div>
-          </div>
           <div class="lib-tabs">
-            <button class="lib-tab active" data-lib-tab="">全部内容</button>
-            <button class="lib-tab" data-lib-tab="选题库">选题库</button>
-            <button class="lib-tab" data-lib-tab="脚本模板库">脚本模板</button>
-            <button class="lib-tab" data-lib-tab="视觉参考库">视觉参考</button>
-            <button class="lib-tab" data-lib-tab="营销话术库">营销话术</button>
+            <div class="lib-tab-group">
+              <button class="lib-tab active" data-lib-tab="">全部内容</button>
+              <button class="lib-tab" data-lib-tab="选题库">选题库</button>
+              <button class="lib-tab" data-lib-tab="脚本模板库">脚本模板</button>
+              <button class="lib-tab" data-lib-tab="视觉参考库">视觉参考</button>
+              <button class="lib-tab" data-lib-tab="营销话术库">营销话术</button>
+            </div>
+            <div class="lib-stats">
+              <span>已归档: <strong id="libStatNotes">0</strong> 笔记</span>
+              <span>/</span>
+              <span><strong id="libStatBrands">0</strong> 品牌</span>
+              <span>/</span>
+              <span><strong id="libStatAssets">0</strong> 素材</span>
+            </div>
           </div>
           <div class="lib-toolbar">
             <div class="lib-search">
@@ -303,6 +304,14 @@
               <button id="selectModeBtn" class="ghost sm" style="padding:0 10px;font-size:12px">☐ 选择</button>
               <select id="brandFilter"><option value="">全部品牌</option></select>
               <select id="contentTypeFilter"><option value="">全部类型</option></select>
+              <select id="sortBySelect">
+                <option value="published_at" selected>按发布时间</option>
+                <option value="collected_at">按采集时间</option>
+              </select>
+              <select id="sortOrderSelect">
+                <option value="DESC">降序 ⬇️</option>
+                <option value="ASC">升序 ⬆️</option>
+              </select>
               <select id="viewModeSelect">
                 <option value="card">卡片视图</option>
                 <option value="table">表格视图</option>
@@ -348,20 +357,6 @@
 
         <!-- 子页面 2：库内分析 -->
         <div id="sub-page-lib-analysis" class="sub-page">
-          <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
-            <div>
-              <h2>库内深度分析</h2>
-              <p>高频主题、标题句式、开头钩子统计</p>
-            </div>
-            <div class="time-range-group">
-              <select id="caRange" class="time-range-select">
-                <option value="">全部</option>
-                <option value="7">近 7 天</option>
-                <option value="30" selected>近 30 天</option>
-                <option value="90">近 90 天</option>
-              </select>
-            </div>
-          </div>
           <div class="stats-grid" id="caStatsGrid">
             <div class="stat-card"><div class="stat-value" id="caTotalNotes">0</div><div class="stat-label">筛选笔记</div></div>
             <div class="stat-card"><div class="stat-value" id="caHookRate">0%</div><div class="stat-label">标题钩子率</div></div>
@@ -393,20 +388,6 @@
 
         <!-- 子页面 1：数据大盘 -->
         <div id="sub-page-ins-dashboard" class="sub-page active">
-          <div class="page-header" style="display:flex;align-items:center;justify-content:space-between">
-            <div>
-              <h2>数据大盘</h2>
-              <p>采集趋势、内容分布与品牌概览</p>
-            </div>
-            <div class="time-range-group">
-              <select id="dashboardRange" class="time-range-select">
-                <option value="">全部</option>
-                <option value="7" selected>近 7 天</option>
-                <option value="30">近 30 天</option>
-                <option value="90">近 90 天</option>
-              </select>
-            </div>
-          </div>
           <div class="stats-grid" id="statsGrid">
             <div class="stat-card"><div class="stat-value" id="statNotes">0</div><div class="stat-label">笔记数</div></div>
             <div class="stat-card"><div class="stat-value" id="statAssets">0</div><div class="stat-label">素材数</div></div>
@@ -414,6 +395,7 @@
             <div class="stat-card"><div class="stat-value" id="statXhsAccounts">0</div><div class="stat-label">登录账号</div></div>
             <div class="stat-card"><div class="stat-value" id="statJobs">0</div><div class="stat-label">采集任务</div></div>
             <div class="stat-card"><div class="stat-value" id="statAnalysis">0</div><div class="stat-label">AI 分析</div></div>
+            <div class="stat-card"><div class="stat-value" id="statAssetPartial">0</div><div class="stat-label">待补素材</div></div>
           </div>
           <div class="charts-grid">
             <div class="card"><div class="card-header"><h3>采集趋势</h3></div><canvas id="chartTrend" height="200"></canvas></div>
@@ -433,10 +415,6 @@
 
         <!-- 子页面 2：复盘报告 -->
         <div id="sub-page-ins-reports" class="sub-page">
-          <div class="page-header">
-            <h2>周期复盘报告</h2>
-            <p>基于小红书抓取内容的周报和月度度量</p>
-          </div>
           <div class="card">
             <div class="filter-bar">
               <select id="reportTypeSelect">
@@ -480,6 +458,15 @@
           <button id="closeSettingsBtn" class="btn-icon">✕</button>
         </div>
         <form id="settingsForm" class="settings-form"></form>
+      </div>
+    </div>
+
+    <!-- Global Task Progress Floating Bar -->
+    <div id="globalTaskProgress" class="global-progress-bar" style="display:none">
+      <div class="gp-spinner"></div>
+      <div class="gp-content">
+        <div class="gp-title">正在采集数据...</div>
+        <div class="gp-message">正在拉取笔记数据</div>
       </div>
     </div>
 

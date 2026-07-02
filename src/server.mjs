@@ -20,6 +20,8 @@ import { Logger, setGlobalLogger } from "./logger.mjs";
 import { sendWebhook } from "./webhook.mjs";
 import { exportForEagle } from "./eagleExporter.mjs";
 import { isOfficialXhsLogo } from "./crawler/account.mjs";
+import { buildAssetIntegrity, isNoteComplete, shouldRepairNoteAssets } from "./noteCompleteness.mjs";
+import { isValidCron } from "./cron.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url || 'file://' + (process.cwd().replace(/\\/g, '/')) + '/'));
 const rootDir = process.env.APP_DATA_DIR || path.resolve(__dirname, "..");
@@ -42,6 +44,14 @@ process.on("uncaughtException", (error) => {
 });
 
 const ctx = { rootDir, storage, logger };
+
+function defaultScheduleCron() {
+  return String(loadSettings(rootDir).xhs?.defaultScheduleCron || "").trim();
+}
+
+function withDefaultScheduleCron(input) {
+  return { ...input, cronExpression: String(input.cronExpression || defaultScheduleCron() || "").trim() };
+}
 
 // 启动时优先从本地文件读取或生成随机 APP_TOKEN，避免重启后前端页面失效（防 CSRF）
 const tokenPath = path.join(rootDir, "data", ".app_token");
@@ -257,7 +267,12 @@ route("POST", "/api/xhs-accounts/check-all", async (req, res) => {
 // ===== Scheduled Tasks =====
 route("GET", "/api/scheduled-tasks", (req, res) => sendJson(res, 200, storage.listScheduledTasks()));
 route("POST", "/api/scheduled-tasks", async (req, res) => {
-  sendJson(res, 201, storage.createScheduledTask(await readBody(req)));
+  const body = withDefaultScheduleCron(await readBody(req));
+  if (body.cronExpression && !isValidCron(body.cronExpression)) {
+    sendJson(res, 400, { error: "Cron 表达式格式错误，请使用 5 段格式，例如 0 9 * * *" });
+    return;
+  }
+  sendJson(res, 201, storage.createScheduledTask(body));
 });
 route("GET", "/api/task-logs", (req, res) => sendJson(res, 200, storage.listTaskLogs()));
 route("PUT", null, async (req, res, url) => {
@@ -340,7 +355,7 @@ route("POST", "/api/follow/start", async (req, res) => {
   try {
     const { extractXhsId } = await import("./xhsSdk.mjs");
     const userId = extractXhsId(body.authorUrl);
-    const task = storage.createScheduledTask({ name: `跟随：${body.brand || body.authorUrl.substring(0, 40)}`, taskType: "follow", config: { userId, authorUrl: body.authorUrl, brand: body.brand }, intervalMinutes: Number(body.intervalMinutes) || 1440, accountId: body.accountId || null });
+    const task = storage.createScheduledTask(withDefaultScheduleCron({ name: `跟随：${body.brand || body.authorUrl.substring(0, 40)}`, taskType: "follow", config: { userId, authorUrl: body.authorUrl, brand: body.brand }, intervalMinutes: Number(body.intervalMinutes) || 1440, accountId: body.accountId || null }));
     storage.upsertFollowedAccount({ userId, authorUrl: body.authorUrl, brand: body.brand });
     sendJson(res, 200, { ok: true, task, userId });
   } catch (error) { sendJson(res, 500, { error: error.message }); }
@@ -350,6 +365,7 @@ route("POST", "/api/follow/crawl", async (req, res) => {
   let userId = body.userId || "";
   if (!userId && body.authorUrl) { const { extractXhsId } = await import("./xhsSdk.mjs"); userId = extractXhsId(body.authorUrl); }
   if (!userId) { sendJson(res, 400, { error: "请提供 userId 或账号主页链接" }); return; }
+  let jobId = "";
   try {
     const settings = (await import("./settings.mjs")).envWithSettings(rootDir);
     const useCdp = settings.xhs.cdpPort > 0;
@@ -362,27 +378,79 @@ route("POST", "/api/follow/crawl", async (req, res) => {
       const parsedIds = JSON.parse(followed?.last_cursor || "[]");
       if (Array.isArray(parsedIds)) {
         knownNoteIds = parsedIds.filter(nid => {
-          return !!storage.findNoteByNoteId(nid);
+          const note = storage.findNoteByNoteId(nid);
+          return note && isNoteComplete(note, storage);
         });
       }
     } catch {}
-    const dbKnownNoteIds = storage.listNotes({ authorId: userId })
+    const existingAuthorNotes = storage.listNotes({ authorId: userId });
+    const maxRepairExistingNotes = Math.max(0, Number(body.maxRepairExistingNotes ?? settings.xhs.maxRepairExistingNotes ?? 80));
+    const repairNoteIds = existingAuthorNotes
+      .filter(note => shouldRepairNoteAssets(note, storage))
+      .map((note) => note.noteId || extractXhsId(note.sourceUrl || ""))
+      .filter(Boolean)
+      .slice(0, maxRepairExistingNotes);
+    const repairNoteIdSet = new Set(repairNoteIds);
+    const dbKnownNoteIds = existingAuthorNotes
+      .filter(note => isNoteComplete(note, storage))
       .map((note) => note.noteId || extractXhsId(note.sourceUrl || ""))
       .filter(Boolean);
-    knownNoteIds = Array.from(new Set([...knownNoteIds, ...dbKnownNoteIds]));
+    knownNoteIds = Array.from(new Set([...knownNoteIds, ...dbKnownNoteIds])).filter((noteId) => !repairNoteIdSet.has(noteId));
     const crawlCdpPort = cookieRaw ? 0 : (useCdp ? (settings.xhs.cdpPort || 9222) : 0);
-    const maxNotes = Math.max(1, Number(body.maxNotes || 30));
-    logger.info("账号抓取请求开始", { userId, brand: body.brand || "", knownNoteIds: knownNoteIds.length, useCdp: crawlCdpPort > 0, hasCookie: Boolean(cookieRaw) });
-    const result = await followAccount({ userId, authorUrl: body.authorUrl, brand: body.brand, knownNoteIds }, { rootDir, cookie: cookieRaw || "", cdpPort: crawlCdpPort, maxNotes });
-    let newCount = 0;
-    for (const note of result.notes) {
-      const noteId = note.noteId || extractXhsId(note.sourceUrl || "");
-      if (!(noteId ? storage.findNoteByNoteId(noteId) : storage.findNoteBySourceUrl(note.sourceUrl))) {
-        const saved = storage.upsertNote(note);
-        storage.addAssets(saved.id, await persistNoteAssets(rootDir, { ...note, id: saved.id, collectedAt: saved.collectedAt }));
-        newCount++;
+    const maxNotes = Math.max(1, Number(body.maxNotes || settings.xhs.maxAccountNotes || 100));
+    
+    jobId = storage.createJob("follow:" + userId);
+    storage.updateJob(jobId, { status: "运行中", message: "正在获取账号作品列表...", resultCount: 0 });
+    
+    logger.info("本轮账号抓取开始", { userId, brand: body.brand || "", knownNoteIds: knownNoteIds.length, repairNoteIds: repairNoteIds.length, maxNotes, useCdp: crawlCdpPort > 0, hasCookie: Boolean(cookieRaw) });
+    logger.info("账号抓取请求开始", { userId, brand: body.brand || "", knownNoteIds: knownNoteIds.length, repairNoteIds: repairNoteIds.length, useCdp: crawlCdpPort > 0, hasCookie: Boolean(cookieRaw) });
+    
+    const result = await followAccount({ userId, authorUrl: body.authorUrl, brand: body.brand, knownNoteIds, repairNoteIds }, {
+      rootDir,
+      cookie: cookieRaw || "",
+      cdpPort: crawlCdpPort,
+      maxNotes,
+      onProgress: (processed, total, currentUrl) => {
+        const totalCount = Math.max(0, Number(total || 0));
+        const shouldLog = processed === 1 || processed === totalCount || processed % 5 === 0;
+        storage.updateJob(jobId, {
+          status: "运行中",
+          message: `正在提取作品详情: ${processed}/${total}`,
+          resultCount: processed
+        });
+        if (shouldLog) {
+          logger.info("本轮账号抓取进度：正在提取作品详情", { userId, processed, total: totalCount, noteId: extractXhsId(currentUrl || "") || "" });
+        }
       }
+    });
+    
+    const newNotesToDownload = result.notes.filter(note => {
+      const noteId = note.noteId || extractXhsId(note.sourceUrl || "");
+      const existing = noteId ? storage.findNoteByNoteId(noteId) : storage.findNoteBySourceUrl(note.sourceUrl);
+      return repairNoteIdSet.has(noteId) || !existing || !isNoteComplete(existing, storage);
+    });
+    
+    let newCount = 0;
+    let repairedCount = 0;
+    for (let i = 0; i < newNotesToDownload.length; i++) {
+      const note = newNotesToDownload[i];
+      const noteId = note.noteId || extractXhsId(note.sourceUrl || "");
+      const existing = noteId ? storage.findNoteByNoteId(noteId) : storage.findNoteBySourceUrl(note.sourceUrl);
+      storage.updateJob(jobId, {
+        status: "运行中",
+        message: `正在下载媒体素材: ${i + 1}/${newNotesToDownload.length} - ${note.title.slice(0, 15)}...`,
+        resultCount: i
+      });
+      logger.info("本轮账号抓取进度：正在保存素材", { userId, current: i + 1, total: newNotesToDownload.length, title: String(note.title || "未命名").slice(0, 30) });
+      const saved = storage.upsertNote(note);
+      const assets = await persistNoteAssets(rootDir, { ...note, id: saved.id, collectedAt: saved.collectedAt });
+      const integrity = buildAssetIntegrity(note, assets);
+      const finalNote = storage.upsertNote({ ...note, status: integrity.status, reviewReason: integrity.reviewReason, raw: integrity.raw });
+      storage.addAssets(finalNote.id, assets);
+      if (existing) repairedCount++;
+      else newCount++;
     }
+    
     const actualUserId = userId || result.notes[0]?.authorId || "";
     if (actualUserId) {
       const updated = storage.upsertFollowedAccount({
@@ -397,10 +465,17 @@ route("POST", "/api/follow/crawl", async (req, res) => {
       });
       if (updated) storage.createFollowCheck({ accountId: updated.id, newNotes: newCount, totalNotes: result.totalFound });
     }
-    logger.info("账号抓取请求完成", { userId, returnedNotes: result.notes.length, newNotes: newCount, totalFound: result.totalFound });
+    
+    storage.updateJob(jobId, { status: "成功", message: `成功导入 ${newCount} 篇作品，修复 ${repairedCount} 篇素材`, resultCount: newCount + repairedCount });
+    logger.info("本轮账号抓取完成", { userId, status: "成功", candidateNotes: result.totalFound, returnedNotes: result.notes.length, newNotes: newCount, repairedNotes: repairedCount });
+    logger.info("账号抓取请求完成", { userId, returnedNotes: result.notes.length, newNotes: newCount, repairedNotes: repairedCount, totalFound: result.totalFound });
     if (newCount > 0) { clearCache(); sendWebhook(rootDir, "账号追踪完成", `账号：${result.authorName || userId}\n新增笔记：${newCount} 条\n总笔记：${result.totalFound} 篇`); }
-    sendJson(res, 200, { ok: true, notes: result.notes.length, newNotes: newCount, authorName: result.authorName, avatarUrl: result.avatarUrl || "" });
+    sendJson(res, 200, { ok: true, notes: result.notes.length, newNotes: newCount, repairedNotes: repairedCount, authorName: result.authorName, avatarUrl: result.avatarUrl || "" });
   } catch (error) {
+    if (jobId) {
+      try { storage.updateJob(jobId, { status: "失败", message: error.message }); } catch {}
+    }
+    logger.error("本轮账号抓取失败", { userId, brand: body.brand || "", status: "失败", message: error.message });
     logger.error("账号抓取请求失败", { userId, brand: body.brand || "", message: error.message, stack: error.stack });
     sendJson(res, 500, { error: error.message });
   }
@@ -441,7 +516,7 @@ route("POST", null, async (req, res, url) => {
     if (!userId) { sendJson(res, 400, { error: "无法提取用户 ID" }); return true; }
     if (storage.getFollowedAccountByUserId(userId)) { sendJson(res, 200, { ok: true, alreadyFollowing: true }); return true; }
     storage.upsertFollowedAccount({ userId, authorName: account.account_name || account.brand, authorUrl: account.account_url, brand: account.brand, avatarUrl: body?.avatarUrl || "" });
-    storage.createScheduledTask({ name: `跟随：${account.brand || account.account_name || userId.substring(0, 8)}`, taskType: "follow", config: { userId, authorUrl: account.account_url, brand: account.brand }, intervalMinutes: 1440 });
+    storage.createScheduledTask(withDefaultScheduleCron({ name: `跟随：${account.brand || account.account_name || userId.substring(0, 8)}`, taskType: "follow", config: { userId, authorUrl: account.account_url, brand: account.brand }, intervalMinutes: 1440 }));
     storage.createNotification({ type: "follow", title: `开始跟随 ${account.brand || account.account_name}`, message: "已创建定时跟踪任务", level: "info" });
     sendJson(res, 200, { ok: true, userId }); return true;
   } catch (error) { sendJson(res, 500, { error: error.message }); return true; }
@@ -696,9 +771,30 @@ route("POST", null, async (req, res, url) => {
   const note = storage.getNote(m[1]);
   if (!note) { sendJson(res, 404, { error: "未找到笔记" }); return true; }
   try {
+    const settings = (await import("./settings.mjs")).envWithSettings(rootDir);
+    const cacheMinutes = Math.max(1, Number(body.cacheMinutes ?? settings.xhs.commentCacheMinutes ?? 360));
+    const force = body.force === true;
+    const cachedComments = storage.getComments(m[1]);
+    const cacheInfo = storage.getCommentCacheInfo(m[1]);
+    const fetchedAtMs = cacheInfo.fetchedAt ? new Date(cacheInfo.fetchedAt).getTime() : 0;
+    const fresh = fetchedAtMs > 0 && (Date.now() - fetchedAtMs) < cacheMinutes * 60 * 1000;
+    if (!force && fresh) {
+      sendJson(res, 200, {
+        noteUrl: note.sourceUrl,
+        count: cachedComments.length,
+        comments: cachedComments,
+        cached: true,
+        fetchedAt: cacheInfo.fetchedAt,
+        cacheMinutes
+      });
+      return true;
+    }
     const result = await collectComments(note.sourceUrl, { rootDir, headless: !!body.headless, proxy: body.proxy || "" });
-    if (result.count > 0) storage.saveComments(m[1], result.comments);
-    sendJson(res, 200, result); return true;
+    storage.saveComments(m[1], result.comments || []);
+    const comments = storage.getComments(m[1]);
+    const nextInfo = storage.getCommentCacheInfo(m[1]);
+    sendJson(res, 200, { ...result, count: comments.length, comments, cached: false, fetchedAt: nextInfo.fetchedAt, cacheMinutes });
+    return true;
   } catch (error) { sendJson(res, 500, { error: error.message }); return true; }
 });
 
@@ -716,6 +812,12 @@ route("PUT", "/api/settings", async (req, res) => {
   if (body.download) Object.assign(merged.download, body.download);
   if (body.ai) Object.assign(merged.ai, body.ai);
   if (body.notification) Object.assign(merged.notification, body.notification);
+  const cronExpression = String(merged.xhs?.defaultScheduleCron || "").trim();
+  if (cronExpression && !isValidCron(cronExpression)) {
+    sendJson(res, 400, { error: "默认 Cron 表达式格式错误，请使用 5 段格式，例如 0 9 * * *" });
+    return;
+  }
+  merged.xhs.defaultScheduleCron = cronExpression;
   writeFileSync(path.join(rootDir, "data", "settings.json"), JSON.stringify(merged, null, 2), "utf8");
   clearSettingsCache();
   // 注意：merged 对象含 ai.apiKey 敏感字段，以下日志只打印非敏感字段
@@ -898,6 +1000,12 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (url.pathname.startsWith("/files/") || req.url.startsWith("/files/")) {
+      // 轻量级 token 校验：如果请求携带 token 参数则验证，防止局域网嗅探
+      const token = url.searchParams.get("token") || req.headers["x-app-token"] || "";
+      if (token && token !== APP_TOKEN) {
+        sendText(res, 403, "Forbidden");
+        return;
+      }
       const rawPath = (req.url || "").split("?")[0].replace(/^\/files\//, "");
       const decodedPath = decodeURIComponent(rawPath);
       // 安全预检：拒绝任何包含路径遍历片段的请求

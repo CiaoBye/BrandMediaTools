@@ -4,6 +4,7 @@ import { Storage } from "./storage.mjs";
 import { crawlXhs, extractPageLinks, extractXhsUrls, isXhsNoteUrl, mergeXhsLinks, openXhsContext } from "./xhsCrawler.mjs";
 import { persistNoteAssets } from "./downloader.mjs";
 import { parseBool } from "./settings.mjs";
+import { buildAssetIntegrity } from "./noteCompleteness.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, "..");
@@ -81,17 +82,20 @@ async function detail(args = {}) {
 
     for (const note of notes) {
       const savedNote = storage.upsertNote(note);
+      let assets = [];
       if (download) {
-        const assets = await persistNoteAssets(rootDir, {
+        assets = await persistNoteAssets(rootDir, {
           ...note,
           id: savedNote.id,
           collectedAt: savedNote.collectedAt
         });
-        storage.addAssets(savedNote.id, assets);
       } else {
-        storage.addAssets(savedNote.id, note.assets || []);
+        assets = note.assets || [];
       }
-      output.push(summarizeNote(storage.getNote(savedNote.id)));
+      const integrity = buildAssetIntegrity(note, assets);
+      const finalNote = storage.upsertNote({ ...note, status: integrity.status, reviewReason: integrity.reviewReason, raw: integrity.raw });
+      storage.addAssets(finalNote.id, assets);
+      output.push(summarizeNote(storage.getNote(finalNote.id)));
     }
   }
 
@@ -209,7 +213,7 @@ async function handle(message) {
           capabilities: { tools: {} },
           serverInfo: {
             name: "brand-content-intelligence-xhs",
-            version: "1.13.9"
+            version: "1.14.9"
           }
         }
       };

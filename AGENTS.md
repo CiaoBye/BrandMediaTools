@@ -135,7 +135,75 @@
 - **HTTP 快速路径仅对含 `xsec_token` 的 URL 有效** — `fetchNoteViaHttp` 自动跳过无 token URL，走 Playwright 降级
 
 ## 近期修复
+### 2026-07-02 v1.14.9 入库状态展示下沉到数据大盘
+- 移除案例卡片和详情弹窗中的红色“已入库/应有/缺失”状态块，内容阅读区不再展示工程入库状态。
+- `/api/stats` 仅返回经后端 `assetIntegrity` 确认的 `assetPartialNotes`，数据大盘只展示“待补素材”指标卡。
+- 没有 `assetIntegrity` 的历史旧笔记不计入“待补素材”，避免在详情里显示 `应有 0 / 已落盘 0 / 缺失 0` 的误导性数据。
+- 数据大盘统计卡片改为自适应列宽，减少宽屏右侧空白。
+- 服务集成测试新增 `/api/stats` 素材完整性字段断言，`npm test` 全量通过。
+
+### 2026-07-02 v1.14.8 账号抓取链路加速
+- `followAccount()` 的账号作品详情 HTTP 快速路径改为有限并发，默认 `xhs.accountHttpParallel = 4`，代码上限 8。
+- 已在 HTTP 快速路径确认失败的笔记，进入 Playwright 降级时不再立刻重复 HTTP 请求，减少无效等待。
+- 账号 HTTP 列表发现本轮没有新增/待修复笔记时直接返回，不再启动浏览器加载主页。
+- 设置页采集标签新增“账号详情 HTTP 并发数”，可根据网络和账号状态调节速度与稳定性。
+- `crawl-chain-audit-test` 新增有限并发断言，采集链路审计升级为 11/11。
+
+### 2026-07-01 v1.14.7 Cron 定时设置
+- 定时任务支持 5 段 Cron 表达式，按北京时间计算 `next_run_at`；未配置 Cron 时继续使用原有 `interval_minutes`。
+- 设置页采集标签新增 `xhs.defaultScheduleCron`，作为新建定时任务和账号跟随任务的默认 Cron；为空时账号跟随默认仍为 1440 分钟。
+- 新建定时任务表单新增单任务 Cron 输入框，可覆盖设置里的默认 Cron。
+- 服务端在保存设置和创建任务时校验 Cron 格式，避免错误表达式入库。
+- 调度回归覆盖 Cron 解析、北京时间下一次运行和 Cron 任务推进。
+
+### 2026-07-01 v1.14.6 真实入库状态与后端完整性计算
+- 新增统一 `assetIntegrity` 计算，后端记录每条笔记应有素材数、实际落盘数和缺失数；只有全部应有素材落盘才标记为“完整入库”。
+- 没有 `assetIntegrity` 的历史图文/Live 笔记会进入详情复核，不再依赖前端或旧 `imageCount` 猜测是否完整。
+- 单条采集、手动账号抓取、定时采集、定时 follow、CLI 和 MCP 都统一写入 `expected/saved/missing/assetIntegrity`。
+- 案例卡片和详情弹窗展示后端计算出的“部分入库/素材待下载/缺失数量”，前端只展示结果，不参与判断。
+- 核心回归覆盖部分入库、完整入库、历史无完整性元数据进入复核；`npm test` 全量通过。
+
+### 2026-07-01 v1.14.5 账号抓取历史缺图修复
+- 手动账号抓取和定时 follow 会扫描已入库图文/Live 笔记中的疑似缺图项（0-1 张图、失败素材、HTML fallback），生成 `repairNoteIds` 修复名单。
+- `followAccount()` 对 `repairNoteIds` 中的已知笔记不再按 `knownNoteIds` 跳过，会重新进入详情提取和素材保存流程；运行日志会显示 `repairNoteIds` 数量。
+- 新增 `xhs.maxRepairExistingNotes`，默认每轮最多修复 80 条旧疑似缺图笔记，避免一次性重扫全部历史内容。
+- `follow-account-dedup-test` 新增“已知但待修复的笔记会重新采集”场景；`npm test` 全量通过。
+
+### 2026-07-01 v1.14.4 单条笔记缺图修复
+- 单条 HTTP 快速路径兼容 `image_list` / `images` / `imgs` 图片列表，以及 `url_default`、`url_pre`、`info_list` 等蛇形资源字段，避免只识别 `imageList` 导致图文笔记缺图。
+- `/api/crawl` 的 skip 判断改为“已存在且素材完整才跳过”；已入库但缺图的单条笔记再次采集时会重新解析并覆盖素材。
+- 前端 `fileUrl()` 增加远程 `sourceUrl` 兜底，详情弹窗不再只显示有本地 `localPath` 的图片。
+- `core-regression-test` 新增三图 `image_list` 样本和单条缺图重采断言；`npm test` 全量通过。
+
+### 2026-07-01 v1.14.3 测试闸门、素材完整性与评论定时刷新
+- `npm test` 全量恢复通过；Windows 临时目录 EPERM 清理失败在核心回归测试中降级为警告，避免掩盖真实业务断言结果。
+- `crawl-chain-audit-test` 同步 `currentUrl` 登录页判断写法，采集链路审计恢复 10/10 通过。
+- 修复 `deleteNote()` / `batchDeleteNotes()` 物理文件删除路径收集顺序：先记录素材路径，数据库 COMMIT 成功后再删除文件，避免 assets 表先删导致文件残留。
+- 新增 `src/noteCompleteness.mjs`，手动账号抓取和定时 follow 共用精确完整性判断，优先按 `raw.imageCount`、`livePhotoCount`、`videoCount` 与实际入库素材分类数量比对。
+- 调度器新增 `comments_refresh` 任务类型，支持按笔记链接、品牌、作者或最近笔记定时刷新过期评论缓存；前端定时任务新增“刷新评论”类型。
+- 恢复 `TEST_REPORT.md` 并记录 v1.14.3 验收结果。
+
+### 2026-06-30 v1.14.2 排序、图文素材完整性与评论缓存
+- 案例明细默认按发布时间倒序展示；后端 `listNotes()` 默认排序改为 `published_at` 优先，缺失时回退 `collected_at`。
+- 图文笔记图片提取改为每张图片保留多个候选地址（原始 URL、CDN token 直链等），下载失败会自动尝试备用地址，减少同一笔记多图缺失。
+- 评论接口新增缓存策略：默认 6 小时内优先返回本地缓存，过期后自动抓取最新评论；手动获取评论会强制刷新。
+
+### 2026-06-30 v1.14.1 运行日志业务状态增强
+- `/api/follow/crawl` 手动账号抓取新增本轮业务状态日志：开始抓取、作品列表获取、详情提取进度、素材保存进度、完成和失败状态。
+- `followAccount()` 内部补充阶段日志，定时跟随和手动抓取都会在运行日志中看到更清晰的抓取动态。
+- 运行日志页面在未搜索时每 3 秒自动刷新，抓取过程中无需手动点击刷新。
+- 修复账号抓取任务 `jobId` 作用域问题，失败时也能写回任务状态。
+
+### 2026-06-30 v1.14.0 审计报告问题修复
+- 修复 `deleteNote()` 文件先删后提交事务的问题，物理文件删除后置到数据库 COMMIT 之后。
+- `xhsAuth.mjs` Cookie 加密 key 改用 `data/.scope_id` 稳定标识，降低项目目录移动后无法解密的风险。
+- `downloader.mjs` 跳过已有文件前检查文件大小，避免 0 字节中断文件被永久跳过。
+- `_runningTasks` 增加 10 分钟超时清理；`extractNote()` 增加关键 DOM 等待；账号抓取默认并发下调为 1、滚动延迟上调为 2000ms。
+
 ### 2026-06-30 v1.13.9 采集链路审计测试与去重修复
+- 左侧导航改为按工作流分组的功能入口：内容采集、账号监测、资产沉淀、运营分析、系统；运行日志归入底部系统分组，主内容区不再展示二级 Tab。
+- 将前端一级模块拆为“工作区头部 + 独立功能切换条 + 子页面内容区”的视觉框架，保持原有采集、账号、分析和定时任务逻辑不变。
+- 按参考图优化浅色工作台 UI：降低玻璃拟态和紫色占比，统一侧边栏、页内标签、采集表单、案例卡片、仪表盘卡片、图表配色和设置弹窗视觉层级。
 - 新增 `tests/crawl-chain-audit-test.mjs`，把账号采集增强、successNoteIds 去重、Cookie/CDP 上下文、noteId 存储去重、定时 follow 一致性、Range 回退和弃用代码残留纳入回归检查。
 - 修复 `saveXhsCookieFromBrowser()` 登录等待 `deadline` 未定义导致专用浏览器绑定/刷新 Cookie 入口失败的问题；浏览器态识别不再把 `guest_user_id` 当作真实登录。
 - 手动 Cookie 保存、浏览器 Cookie 保存和调度器健康检查会持久化校验时返回的更新后 Cookie，避免 DB 加密 Cookie 与 `data/xhs-cookie.txt` 保留旧值。

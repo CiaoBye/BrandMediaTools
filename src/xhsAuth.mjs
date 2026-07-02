@@ -1,4 +1,4 @@
-﻿import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { envWithSettings } from "./settings.mjs";
@@ -23,13 +23,34 @@ function deriveKey(rootDir, legacy = false) {
     try {
       const os = process.env.USERNAME || process.env.COMPUTERNAME || "unknown";
       if (legacy) return createHash("sha256").update(os + APP_SECRET).digest("hex").slice(0, 32);
-      const scope = path.resolve(rootDir || process.cwd());
+      // 使用稳定的 scope ID（data/.scope_id）而非绝对路径，支持目录重命名/移动
+      const scope = _resolveScopeId(rootDir);
       return createHash("sha256").update(`${os}:${scope}:${APP_SECRET}`).digest();
     } catch { return createHash("sha256").update(APP_SECRET).digest(); }
   })();
   return machineId;
 }
 
+
+/**
+ * 生成/读取项目稳定标识符，不依赖绝对路径
+ * 写入 data/.scope_id 文件，支持目录改名、移动后依然能解密已有 Cookie
+ */
+function _resolveScopeId(rootDir) {
+  const root = path.resolve(rootDir || process.cwd());
+  const scopePath = path.join(root, "data", ".scope_id");
+  try {
+    if (existsSync(scopePath)) {
+      return readFileSync(scopePath, "utf8").trim();
+    }
+    const id = createHash("sha256").update(APP_SECRET + Date.now().toString()).digest("hex").slice(0, 16);
+    mkdirSync(path.dirname(scopePath), { recursive: true });
+    writeFileSync(scopePath, id, "utf8");
+    return id;
+  } catch {
+    return root;
+  }
+}
 export function encryptCookie(cookieString, rootDir) {
   if (!cookieString) return "";
   const key = deriveKey(rootDir);
@@ -177,17 +198,11 @@ export function inspectCookieStateFromHtml(html) {
   const auth = unwrapReactive(user.auth);
   const basic = userPageData.basicInfo || {};
   // SSR guest flag is unreliable - XHS often pre-renders guest:true even for valid sessions
-  const guestFlags = [userInfo.guest, userPageData.guest, auth.guest].filter(v => v === true).length;
   const rawUserId = userInfo.userId || userInfo.id || basic.userId || basic.redId || "";
   const userId = /^guest/i.test(String(rawUserId || "")) ? "" : rawUserId;
-  const hasIdentity = Boolean(userId || userInfo.nickname || basic.nickname);
-  const isGuest = guestFlags > 0 && !hasIdentity;
   const nickname = userInfo.nickname || basic.nickname || "";
-  const isLoggedIn = (
-    loggedIn === true ||
-    loggedIn.value === true ||
-    Boolean(userId || nickname)
-  ) || (guestFlags === 0 && hasIdentity);
+  const isGuest = !userId || !nickname;
+  const isLoggedIn = Boolean(userId) && Boolean(nickname);
   return { hasState: true, isLoginPage: false, isGuest, isLoggedIn, userId, nickname };
 }
 

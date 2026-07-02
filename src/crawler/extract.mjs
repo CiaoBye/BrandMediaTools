@@ -55,6 +55,17 @@ function hasUsableAssets(note) {
   return note.assets.some(a => a.kind === "image" || a.kind === "video" || a.kind === "livePhoto");
 }
 
+function noteImageList(noteData) {
+  if (!noteData || typeof noteData !== "object") return [];
+  for (const key of ["imageList", "image_list", "images", "imgs", "image"]) {
+    const value = noteData[key];
+    if (Array.isArray(value)) {
+      return value.map((item) => item?.image || item?.imageInfo || item?.image_info || item).filter(Boolean);
+    }
+  }
+  return [];
+}
+
 function errorMeta(input, extracted, reason, extra) {
   return {
     platform: "小红书", sourceUrl: input.url, noteId: extractXhsId(input.url),
@@ -67,6 +78,8 @@ function errorMeta(input, extracted, reason, extra) {
 }
 
 async function extractNote(page, input, networkBodies = [], videoPreference = "resolution", videoMinHeight = 0) {
+  // 先等关键 DOM 元素渲染完成，提升提取稳定性
+  await page.waitForSelector("meta[property='og:title'], [class*=note], [class*=feeds-page], #detail-title", { timeout: 3000 }).catch(() => {});
   const extracted = await page.evaluate(() => {
     const meta = (name) => document.querySelector(`meta[property="${name}"]`)?.content || document.querySelector(`meta[name="${name}"]`)?.content || "";
     const textOf = (selectors) => {
@@ -89,15 +102,24 @@ async function extractNote(page, input, networkBodies = [], videoPreference = "r
     const noteDetailMap = window.__INITIAL_STATE__?.note?.noteDetailMap || {};
     const noteDetails = Object.values(noteDetailMap).map((item) => item?.note || item).filter(Boolean);
     const structuredNote = noteDetails.find((item) => item?.noteId && location.href.includes(item.noteId)) || noteDetails[0] || null;
-    const structuredImages = Array.isArray(structuredNote?.imageList)
-      ? structuredNote.imageList.map((image) => ({
-          fileId: image.fileId || "", width: image.width || null, height: image.height || null,
-          url: image.url || "", urlPre: image.urlPre || "", urlDefault: image.urlDefault || "",
-          livePhoto: Boolean(image.livePhoto), traceId: image.traceId || "",
-          infoList: Array.isArray(image.infoList) ? image.infoList.map((item) => ({ imageScene: item?.imageScene || "", url: item?.url || "" })) : [],
-          stream: image.stream || null
-        }))
-      : [];
+    const rawImages = (() => {
+      for (const key of ["imageList", "image_list", "images", "imgs", "image"]) {
+        const value = structuredNote?.[key];
+        if (Array.isArray(value)) return value.map((item) => item?.image || item?.imageInfo || item?.image_info || item).filter(Boolean);
+      }
+      return [];
+    })();
+    const structuredImages = rawImages.map((image) => ({
+      fileId: image.fileId || image.file_id || "", width: image.width || null, height: image.height || null,
+      url: image.url || "", urlPre: image.urlPre || image.url_pre || "", urlDefault: image.urlDefault || image.url_default || "",
+      livePhoto: Boolean(image.livePhoto || image.live_photo), traceId: image.traceId || image.trace_id || "",
+      infoList: Array.isArray(image.infoList)
+        ? image.infoList.map((item) => ({ imageScene: item?.imageScene || item?.image_scene || "", url: item?.url || "" }))
+        : Array.isArray(image.info_list)
+          ? image.info_list.map((item) => ({ imageScene: item?.imageScene || item?.image_scene || "", url: item?.url || "" }))
+          : [],
+      stream: image.stream || null
+    }));
     const videoInfo = structuredNote?.video || {};
     const videoStream = videoInfo.media?.stream || videoInfo.consumerInfo?.stream || null;
     const text = document.body?.innerText || "";
@@ -318,25 +340,33 @@ async function fetchNoteViaHttp(input$1, options$1 = {}) {
       return { status: 200, html: result.html, mode };
     }
     const buildNoteResult$1 = (noteData, mode) => {
-      const imageList = Array.isArray(noteData.imageList) ? noteData.imageList : [];
-      const hasVideo$1 = Boolean(noteData.video);
+      const imageList = noteImageList(noteData);
+      const videoData$1 = noteData.video || noteData.videoInfo || noteData.video_info || null;
+      const hasVideo$1 = Boolean(videoData$1);
       const assets$1 = [];
       for (let i = 0; i < imageList.length; i++) {
         const img = imageList[i];
-        const imgUrl = cleanAssetUrl(bestImageUrl(img));
+        const seenCandidateUrls = new Set();
+        const candidates = bestImageUrls(img).flatMap((item) => [item.url, item.cdnUrl]).map(cleanAssetUrl).filter(Boolean).filter((url) => {
+          if (seenCandidateUrls.has(url)) return false;
+          seenCandidateUrls.add(url);
+          return true;
+        });
+        const imgUrl = candidates[0] || cleanAssetUrl(bestImageUrl(img));
         if (imgUrl) {
           assets$1.push({
             kind: "image", url: imgUrl, sourceUrl: imgUrl,
             width: img.width || null, height: img.height || null,
             resolution: img.width && img.height ? img.width + "x" + img.height : "",
             cdnToken: extractImageToken(imgUrl) || "",
+            fallbackUrls: candidates.slice(1),
             watermarkStatus: watermarkStatus(imgUrl),
             source: "http:init-state", imageIndex: i + 1,
-            fileId: img.fileId || "", traceId: img.traceId || "",
-            livePhoto: Boolean(img.livePhoto), pairedImageIndex: null, bitrate: null, fileSize: null
+            fileId: img.fileId || img.file_id || "", traceId: img.traceId || img.trace_id || "",
+            livePhoto: Boolean(img.livePhoto || img.live_photo), pairedImageIndex: null, bitrate: null, fileSize: null
           });
         }
-        if (img.livePhoto) {
+        if (img.livePhoto || img.live_photo) {
           const streamUrl = cleanAssetUrl(bestStreamUrl(img.stream));
           if (streamUrl) {
             assets$1.push({
@@ -345,15 +375,15 @@ async function fetchNoteViaHttp(input$1, options$1 = {}) {
               resolution: img.width && img.height ? img.width + "x" + img.height : "",
               watermarkStatus: watermarkStatus(streamUrl),
               source: "http:init-state", imageIndex: i + 1, pairedImageIndex: i + 1,
-              fileId: img.fileId || "", traceId: img.traceId || "",
+              fileId: img.fileId || img.file_id || "", traceId: img.traceId || img.trace_id || "",
               livePhoto: true, bitrate: null, fileSize: null
             });
           }
         }
       }
-      if (hasVideo$1 && noteData.video && typeof noteData.video === "object") {
-        const streamAssets = extractVideoStreamAssets(noteData.video.media?.stream || noteData.video.consumerInfo?.stream);
-        const consumer = noteData.video.consumer || noteData.video.consumerInfo || {};
+      if (hasVideo$1 && videoData$1 && typeof videoData$1 === "object") {
+        const streamAssets = extractVideoStreamAssets(videoData$1.media?.stream || videoData$1.consumerInfo?.stream || videoData$1.consumer_info?.stream);
+        const consumer = videoData$1.consumer || videoData$1.consumerInfo || videoData$1.consumer_info || {};
         if (consumer.originVideoKey) {
           streamAssets.unshift({
             kind: "video", url: "https://sns-video-bd.xhscdn.com/" + consumer.originVideoKey, sourceUrl: "https://sns-video-bd.xhscdn.com/" + consumer.originVideoKey,
@@ -380,7 +410,9 @@ async function fetchNoteViaHttp(input$1, options$1 = {}) {
       const authorName$1 = noteData.user?.nickname || noteData.user?.nickName || "";
       const authorId$1 = noteData.user?.userId || noteData.user?.user_id || "";
       const metrics$1 = noteData.interactInfo || {};
-      const hasLivePhoto$1 = assets$1.some((a) => a.kind === "livePhoto");
+      const livePhotoCount$1 = assets$1.filter((a) => a.kind === "livePhoto").length;
+      const videoCount$1 = assets$1.filter((a) => a.kind === "video").length;
+      const hasLivePhoto$1 = livePhotoCount$1 > 0;
       const contentType$1 = hasLivePhoto$1 ? "Live图文" : hasVideo$1 ? "视频笔记" : imageList.length ? "图文笔记" : "待复核";
       const status$1 = assets$1.length ? "已入库" : "需人工复核";
       return {
@@ -397,7 +429,7 @@ async function fetchNoteViaHttp(input$1, options$1 = {}) {
         lastUpdateTime: noteData.lastUpdateTime ? new Date(Number(noteData.lastUpdateTime)).toISOString() : null,
         cover: coverAsset$1 ? { url: coverAsset$1.url, width: coverAsset$1.width, height: coverAsset$1.height } : null,
         shareInfo: noteData.shareInfo || null,
-        raw: { source: "http:init-state", acquisitionMode: mode, authUsed: mode === "cookie", noteId: noteData.noteId, imageCount: imageList.length, assetCount: assets$1.length },
+        raw: { source: "http:init-state", acquisitionMode: mode, authUsed: mode === "cookie", noteId: noteData.noteId, imageCount: imageList.length, livePhotoCount: livePhotoCount$1, videoCount: videoCount$1, assetCount: assets$1.length },
         assets: assets$1.map((a) => ({ ...a, sourceUrl: a.sourceUrl || a.url || "" }))
       };
     };

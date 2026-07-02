@@ -1,4 +1,4 @@
-﻿import { checkCookieValid } from "../xhsAuth.mjs";
+import { checkCookieValid } from "../xhsAuth.mjs";
 import { writeFileSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { envWithSettings } from "../settings.mjs";
@@ -55,6 +55,10 @@ export async function saveXhsCookieFromBrowser(rootDir, options = {}) {
       timezoneId: "Asia/Shanghai"
     };
     if (executablePath) launchOptions.executablePath = executablePath;
+    const proxyUrl = options.proxy || settings.xhs.proxy || process.env.XHS_PROXY || process.env.HTTP_PROXY || process.env.HTTPS_PROXY || "";
+    if (proxyUrl) {
+      launchOptions.proxy = { server: proxyUrl };
+    }
     try {
       contextOwnedByTool = true;
       return await withTimeout(
@@ -119,13 +123,11 @@ export async function saveXhsCookieFromBrowser(rootDir, options = {}) {
         const loggedIn = unwrap(user.loggedIn);
         const auth = unwrap(user.auth);
         const basic = pageData.basicInfo || {};
-        const guestFlags = [userInfo.guest, pageData.guest, auth.guest].filter(v => v === true).length;
         const rawUserId = userInfo.userId || userInfo.id || basic.userId || basic.redId || "";
         const userId = /^guest/i.test(String(rawUserId || "")) ? "" : rawUserId;
         const nickname = userInfo.nickname || basic.nickname || "";
-        const hasIdentity = Boolean(userId || nickname);
-        const isGuest = guestFlags > 0 && !hasIdentity;
-        const isLoggedIn = (loggedIn === true || loggedIn.value === true || Boolean(userId || nickname || userInfo.userId || userInfo.id)) || (guestFlags === 0 && hasIdentity);
+        const isGuest = !userId || !nickname;
+        const isLoggedIn = Boolean(userId) && Boolean(nickname);
         const body = document.body.innerText || "";
         return {
           isLoggedIn,

@@ -12,7 +12,7 @@
  */
 
 // 模拟 followAccount 的回退逻辑
-function simulateFallbackLogic(noteUrls, knownNoteIdSet, fetchSuccessMap) {
+function simulateFallbackLogic(noteUrls, knownNoteIdSet, fetchSuccessMap, repairNoteIdSet = new Set()) {
   const seenNoteIds = new Set();
   const successNoteIds = new Set();
   const allNotes = [];
@@ -24,7 +24,7 @@ function simulateFallbackLogic(noteUrls, knownNoteIdSet, fetchSuccessMap) {
     const qIdx = parts.indexOf("?");
     const noteId = qIdx >= 0 ? parts.substring(0, qIdx) : parts;
     if (!noteId || seenNoteIds.has(noteId)) continue;
-    if (knownNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
+    if (knownNoteIdSet.has(noteId) && !repairNoteIdSet.has(noteId)) { seenNoteIds.add(noteId); continue; }
     seenNoteIds.add(noteId);
     attemptedNewCount++;
 
@@ -54,7 +54,7 @@ function simulateFallbackLogic(noteUrls, knownNoteIdSet, fetchSuccessMap) {
       const qIdx = parts.indexOf("?");
       const noteId = qIdx >= 0 ? parts.substring(0, qIdx) : parts;
       if (!noteId || seenNoteIds.has(noteId)) continue;
-      if (knownNoteIdSet.has(noteId)) continue;
+      if (knownNoteIdSet.has(noteId) && !repairNoteIdSet.has(noteId)) continue;
       seenNoteIds.add(noteId);
       pwNotes.push({ url, noteId, source: "playwright" });
     }
@@ -63,7 +63,7 @@ function simulateFallbackLogic(noteUrls, knownNoteIdSet, fetchSuccessMap) {
       const parts = url.split("/").pop() || "";
       const qIdx = parts.indexOf("?");
       const noteId = qIdx >= 0 ? parts.substring(0, qIdx) : parts;
-      if (noteId && !knownNoteIdSet.has(noteId) && !successNoteIds.has(noteId)) {
+      if (noteId && (!knownNoteIdSet.has(noteId) || repairNoteIdSet.has(noteId)) && !successNoteIds.has(noteId)) {
         seenNoteIds.delete(noteId);
       }
     }
@@ -72,7 +72,7 @@ function simulateFallbackLogic(noteUrls, knownNoteIdSet, fetchSuccessMap) {
       const qIdx = parts.indexOf("?");
       const noteId = qIdx >= 0 ? parts.substring(0, qIdx) : parts;
       if (!noteId || seenNoteIds.has(noteId)) continue;
-      if (knownNoteIdSet.has(noteId)) continue;
+      if (knownNoteIdSet.has(noteId) && !repairNoteIdSet.has(noteId)) continue;
       seenNoteIds.add(noteId);
       pwNotes.push({ url, noteId, source: "playwright" });
     }
@@ -156,6 +156,23 @@ const noteUrls = [
   assert.equal(result.pwNotes.length, 2, "Playwright 2 条");
 
   console.log("✅ 测试 4 通过: 非首次跟随 + knownNoteIds 去重");
+}
+
+// 测试 5: 非首次跟随 — 已知但待修复的 noteId 仍应重新处理
+{
+  const knownNoteIdSet = new Set(["note001", "note002"]);
+  const repairNoteIdSet = new Set(["note001"]);
+  const fetchSuccessMap = (url) => {
+    const id = url.split("/").pop()?.split("?")[0] || url;
+    return id === "note001" || id === "note003";
+  };
+
+  const result = simulateFallbackLogic(noteUrls, knownNoteIdSet, fetchSuccessMap, repairNoteIdSet);
+
+  assert.deepEqual(result.allNotes.map((note) => note.noteId), ["note001", "note003"], "待修复的已知笔记应重新进入 HTTP 采集");
+  assert.equal(result.fallbackProcessed, 2, "未成功的新笔记仍应进入降级处理");
+
+  console.log("✅ 测试 5 通过: 已知但待修复的笔记会重新采集");
 }
 
 console.log("\n=== follow-account-dedup-test passed ===");

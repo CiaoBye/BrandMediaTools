@@ -57,9 +57,16 @@ test("05 extractAccountNotes 保留 accountParallelTabs 并发采集", () => {
   assert.match(account, /Promise\.allSettled\(chunk\.map\(url\s*=>\s*processUrl\(url\)\)\)/, "应按 chunk 并行采集");
 });
 
+test("05b followAccount HTTP 快速路径支持有限并发", () => {
+  assert.match(account, /function\s+mapLimited\b/, "应保留有限并发工具函数");
+  assert.match(account, /accountHttpParallel/, "应支持账号详情 HTTP 并发设置");
+  assert.match(account, /HTTP 快速路径并发提取作品详情/, "应记录 HTTP 并发提取日志");
+  assert.match(account, /httpFailedNoteIds\.has\(noteId\)/, "已 HTTP 失败的笔记应直接进入 Playwright 降级");
+});
+
 test("06 followAccount 不应硬置访客态为 false", () => {
   assert.equal(account.includes("cs.isGuest = false"), false, "访客态不能被硬置为 false");
-  assert.match(account, /page\.url\(\)\.includes\("\/login"\)\s*\|\|\s*cs\.isGuest/, "应同时检查登录页和 guest 状态");
+  assert.match(account, /(page\.url\(\)|currentUrl)\.includes\("\/login"\)\s*\|\|\s*cs\.isGuest/, "应同时检查登录页和 guest 状态");
 });
 
 test("07 cookieOverride 场景 cdpPort:0 应真正禁用配置中的 CDP", () => {

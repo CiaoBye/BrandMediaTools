@@ -7,6 +7,15 @@ import { fmtDate } from "./time.mjs";
 
 const IMAGE_EXT_MAP = { jpg: "jpg", jpeg: "jpg", png: "png", webp: "webp", heic: "heic", avif: "avif" };
 
+function uniqueStrings(items) {
+  const seen = new Set();
+  return items.map((item) => String(item || "").trim()).filter((item) => {
+    if (!item || seen.has(item)) return false;
+    seen.add(item);
+    return true;
+  });
+}
+
 async function convertImage(sourcePath, targetFormat, quality) {
   if (targetFormat === "AUTO") return;
   const ext = path.extname(sourcePath).replace(".", "").toLowerCase();
@@ -267,7 +276,7 @@ export async function persistNoteAssets(rootDir, note) {
       const fileBase = collapseSeparators(formatFileBase(settings.download.nameFormat, templateValues));
       const fileName = `${safeName(fileBase)}.${ext}`;
       const targetPath = path.join(targetDir, fileName);
-      if (settings.download.skipExistingFiles !== false && existsSync(targetPath)) {
+      if (settings.download.skipExistingFiles !== false && existsSync(targetPath) && statSync(targetPath).size > 0) {
         if (settings.download.writeMtime && note.publishedAt) {
           const mtime = new Date(note.publishedAt).getTime();
           if (!Number.isNaN(mtime)) utimesSync(targetPath, mtime / 1000, mtime / 1000);
@@ -283,7 +292,21 @@ export async function persistNoteAssets(rootDir, note) {
         });
         continue;
       }
-      const result = await downloadFile(rootDir, sourceUrl, targetPath, note, settings);
+      const candidateUrls = uniqueStrings([sourceUrl, ...(Array.isArray(asset.fallbackUrls) ? asset.fallbackUrls : [])]);
+      let result = null;
+      let finalSourceUrl = sourceUrl;
+      let lastDownloadError = null;
+      for (const candidateUrl of candidateUrls) {
+        try {
+          result = await downloadFile(rootDir, candidateUrl, targetPath, note, settings);
+          finalSourceUrl = candidateUrl;
+          break;
+        } catch (downloadError) {
+          lastDownloadError = downloadError;
+          try { unlinkSync(`${targetPath}.part`); } catch {}
+        }
+      }
+      if (!result) throw lastDownloadError || new Error("下载失败");
       if (settings.download.writeMtime && note.publishedAt) {
         const mtime = new Date(note.publishedAt).getTime();
         if (!Number.isNaN(mtime)) utimesSync(targetPath, mtime / 1000, mtime / 1000);
@@ -304,7 +327,7 @@ export async function persistNoteAssets(rootDir, note) {
       }
       saved.push({
         ...asset,
-        sourceUrl,
+        sourceUrl: finalSourceUrl,
         localPath: relativePath(rootDir, finalPath),
         fileName: finalName,
         fileSize: existsSync(finalPath) ? statSync(finalPath).size : result.fileSize,
